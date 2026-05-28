@@ -4,6 +4,7 @@ mod config;
 mod error;
 mod executor;
 mod handlers;
+mod seed;
 mod stats;
 
 use tracing::warn;
@@ -51,7 +52,10 @@ async fn main() -> anyhow::Result<()> {
         "starting proviz-sercilo"
     );
 
-    let (router, _state) = app::build_app(config.clone()).await?;
+    let (router, state) = app::build_app(config.clone()).await?;
+
+    seed::seed_from_env(&state.storage).await;
+    state.catalog.reload().await?;
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
