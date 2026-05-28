@@ -7,7 +7,7 @@ mod handlers;
 mod stats;
 
 use tracing::warn;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::EnvFilter;
 
 use crate::config::{Config, LogFormat};
 
