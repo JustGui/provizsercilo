@@ -13,14 +13,6 @@ pub struct AppError {
 }
 
 impl AppError {
-    pub fn bad_request(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            message: msg.into(),
-            code: "bad_request".to_string(),
-        }
-    }
-
     pub fn not_found(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
