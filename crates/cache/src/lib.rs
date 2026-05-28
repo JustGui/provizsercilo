@@ -1,5 +1,5 @@
-use proviz_core::models::SearchResult;
 use dashmap::DashMap;
+use proviz_core::models::SearchResult;
 use sha2::{Digest, Sha256};
 use std::{
     sync::Arc,
@@ -31,7 +31,12 @@ impl QueryCache {
         Self::default()
     }
 
-    pub fn cache_key(query: &str, language: Option<&str>, country: Option<&str>, group_slug: Option<&str>) -> String {
+    pub fn cache_key(
+        query: &str,
+        language: Option<&str>,
+        country: Option<&str>,
+        group_slug: Option<&str>,
+    ) -> String {
         let mut hasher = Sha256::new();
         hasher.update(query.as_bytes());
         hasher.update(b"\x00");

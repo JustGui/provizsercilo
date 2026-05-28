@@ -16,8 +16,8 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env();
 
     // Logging setup
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.log_level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
 
     match config.log_format {
         LogFormat::Json => {

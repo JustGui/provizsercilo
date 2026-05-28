@@ -3,7 +3,7 @@ use proviz_core::models::SearchResult;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::{extract_domain, ProviderError, SearchProvider, build_client};
+use crate::{build_client, extract_domain, ProviderError, SearchProvider};
 
 pub struct SerperProvider {
     client: reqwest::Client,
@@ -78,10 +78,16 @@ impl SearchProvider for SerperProvider {
         }
         if !resp.status().is_success() {
             let msg = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Http { status, message: msg });
+            return Err(ProviderError::Http {
+                status,
+                message: msg,
+            });
         }
 
-        let body: SerperResponse = resp.json().await.map_err(|e| ProviderError::Parse(e.to_string()))?;
+        let body: SerperResponse = resp
+            .json()
+            .await
+            .map_err(|e| ProviderError::Parse(e.to_string()))?;
 
         let results: Vec<SearchResult> = body
             .organic

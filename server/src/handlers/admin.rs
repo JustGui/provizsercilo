@@ -47,7 +47,9 @@ pub async fn require_admin_token(
 // /admin/reload
 // ---------------------------------------------------------------------------
 
-pub async fn handle_reload(State(state): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {
+pub async fn handle_reload(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
     state.catalog.reload().await?;
     Ok(Json(serde_json::json!({"ok": true})))
 }
@@ -251,7 +253,8 @@ pub async fn handle_resolve_key(
     Path(id): Path<String>,
 ) -> Result<Json<ResolveResponse>, AppError> {
     let key = state.storage.get_api_key(&id).await?;
-    let (ok, checked) = proviz_core::key_resolver::check_key(&key.key_ref, &state.config.secrets_dir);
+    let (ok, checked) =
+        proviz_core::key_resolver::check_key(&key.key_ref, &state.config.secrets_dir);
     Ok(Json(ResolveResponse {
         status: if ok { "ok" } else { "missing" },
         checked,

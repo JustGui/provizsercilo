@@ -28,7 +28,10 @@ impl Catalog {
                     .iter()
                     .filter(|m| m.group_id == group.id && m.is_enabled)
                     .filter_map(|m| {
-                        let key = self.api_keys.iter().find(|k| k.id == m.api_key_id && k.is_active)?;
+                        let key = self
+                            .api_keys
+                            .iter()
+                            .find(|k| k.id == m.api_key_id && k.is_active)?;
                         let provider = self.providers.iter().find(|p| p.id == key.provider_id)?;
                         Some(Candidate {
                             provider: provider.clone(),
@@ -45,7 +48,10 @@ impl Catalog {
             .iter()
             .filter(|k| k.is_active)
             .filter_map(|k| {
-                let provider = self.providers.iter().find(|p| p.id == k.provider_id && p.is_active)?;
+                let provider = self
+                    .providers
+                    .iter()
+                    .find(|p| p.id == k.provider_id && p.is_active)?;
                 Some(Candidate {
                     provider: provider.clone(),
                     api_key: k.clone(),

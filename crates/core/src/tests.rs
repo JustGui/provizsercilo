@@ -169,9 +169,7 @@ fn test_selector_skips_excluded_key() {
         make_candidate("tavily", "k2", 5, true),
     ];
     let req = SelectRequest::default();
-    let (winner, _) = sel
-        .select(&pool, &req, &["k1".to_string()], false)
-        .unwrap();
+    let (winner, _) = sel.select(&pool, &req, &["k1".to_string()], false).unwrap();
     assert_eq!(winner.provider.slug, "tavily");
 }
 
@@ -221,9 +219,24 @@ fn test_selector_respects_request_exclude_provider_slugs() {
 #[test]
 fn test_profile_specificity_exact_match() {
     let matcher = ProfileMatcher::new(vec![
-        LanguageProfile { language: "*".into(), country: "*".into(), priority: vec!["fallback".into()], exclude: vec![] },
-        LanguageProfile { language: "fr".into(), country: "*".into(), priority: vec!["lang_match".into()], exclude: vec![] },
-        LanguageProfile { language: "fr".into(), country: "fr".into(), priority: vec!["exact".into()], exclude: vec![] },
+        LanguageProfile {
+            language: "*".into(),
+            country: "*".into(),
+            priority: vec!["fallback".into()],
+            exclude: vec![],
+        },
+        LanguageProfile {
+            language: "fr".into(),
+            country: "*".into(),
+            priority: vec!["lang_match".into()],
+            exclude: vec![],
+        },
+        LanguageProfile {
+            language: "fr".into(),
+            country: "fr".into(),
+            priority: vec!["exact".into()],
+            exclude: vec![],
+        },
     ]);
     let p = matcher.find(Some("fr"), Some("fr")).unwrap();
     assert_eq!(p.priority[0], "exact");
@@ -232,8 +245,18 @@ fn test_profile_specificity_exact_match() {
 #[test]
 fn test_profile_language_wildcard_fallback() {
     let matcher = ProfileMatcher::new(vec![
-        LanguageProfile { language: "*".into(), country: "*".into(), priority: vec!["catchall".into()], exclude: vec![] },
-        LanguageProfile { language: "fr".into(), country: "*".into(), priority: vec!["french".into()], exclude: vec![] },
+        LanguageProfile {
+            language: "*".into(),
+            country: "*".into(),
+            priority: vec!["catchall".into()],
+            exclude: vec![],
+        },
+        LanguageProfile {
+            language: "fr".into(),
+            country: "*".into(),
+            priority: vec!["french".into()],
+            exclude: vec![],
+        },
     ]);
     let p = matcher.find(Some("fr"), Some("ca")).unwrap();
     assert_eq!(p.priority[0], "french");
@@ -241,9 +264,12 @@ fn test_profile_language_wildcard_fallback() {
 
 #[test]
 fn test_profile_global_fallback() {
-    let matcher = ProfileMatcher::new(vec![
-        LanguageProfile { language: "*".into(), country: "*".into(), priority: vec!["global".into()], exclude: vec![] },
-    ]);
+    let matcher = ProfileMatcher::new(vec![LanguageProfile {
+        language: "*".into(),
+        country: "*".into(),
+        priority: vec!["global".into()],
+        exclude: vec![],
+    }]);
     let p = matcher.find(Some("ja"), Some("jp")).unwrap();
     assert_eq!(p.priority[0], "global");
 }

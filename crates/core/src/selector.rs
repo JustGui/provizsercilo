@@ -114,7 +114,8 @@ impl Selector {
                 }
                 continue;
             }
-            if extra_excludes.contains(&c.api_key.id) || req.exclude_key_ids.contains(&c.api_key.id) {
+            if extra_excludes.contains(&c.api_key.id) || req.exclude_key_ids.contains(&c.api_key.id)
+            {
                 if debug {
                     decisions.push(skip_decision(c, "excluded_by_request", None, None));
                 }
@@ -189,7 +190,11 @@ impl Selector {
 
         // Pass 3: score
         for r in &raw {
-            let priority_score = norm_inv(r.candidate.effective_priority() as f64, min_priority, max_priority);
+            let priority_score = norm_inv(
+                r.candidate.effective_priority() as f64,
+                min_priority,
+                max_priority,
+            );
             let latency_score = r
                 .candidate
                 .provider

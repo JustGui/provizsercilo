@@ -33,7 +33,7 @@ impl ProfileMatcher {
     pub fn new(profiles: Vec<LanguageProfile>) -> Self {
         let mut p = profiles;
         // Stable sort: most specific first, then original order within same specificity.
-        p.sort_by(|a, b| b.specificity().cmp(&a.specificity()));
+        p.sort_by_key(|b| std::cmp::Reverse(b.specificity()));
         Self { profiles: p }
     }
 

@@ -3,7 +3,7 @@ use proviz_core::models::SearchResult;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::{extract_domain, ProviderError, SearchProvider, build_client};
+use crate::{build_client, extract_domain, ProviderError, SearchProvider};
 
 pub struct MojeekProvider {
     client: reqwest::Client,
@@ -47,15 +47,12 @@ impl SearchProvider for MojeekProvider {
         country: Option<&str>,
         api_key: &str,
     ) -> Result<Vec<SearchResult>, ProviderError> {
-        let mut req = self
-            .client
-            .get("https://www.mojeek.com/search")
-            .query(&[
-                ("q", query),
-                ("api_key", api_key),
-                ("fmt", "json"),
-                ("t", &n.to_string()),
-            ]);
+        let mut req = self.client.get("https://www.mojeek.com/search").query(&[
+            ("q", query),
+            ("api_key", api_key),
+            ("fmt", "json"),
+            ("t", &n.to_string()),
+        ]);
 
         if let Some(lang) = language {
             req = req.query(&[("lang", lang)]);
@@ -75,10 +72,16 @@ impl SearchProvider for MojeekProvider {
         }
         if !resp.status().is_success() {
             let msg = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Http { status, message: msg });
+            return Err(ProviderError::Http {
+                status,
+                message: msg,
+            });
         }
 
-        let body: MojeekResponse = resp.json().await.map_err(|e| ProviderError::Parse(e.to_string()))?;
+        let body: MojeekResponse = resp
+            .json()
+            .await
+            .map_err(|e| ProviderError::Parse(e.to_string()))?;
 
         let results: Vec<SearchResult> = body
             .results

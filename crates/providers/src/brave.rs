@@ -3,7 +3,7 @@ use proviz_core::models::SearchResult;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::{extract_domain, ProviderError, SearchProvider, build_client};
+use crate::{build_client, extract_domain, ProviderError, SearchProvider};
 
 pub struct BraveProvider {
     client: reqwest::Client,
@@ -76,10 +76,16 @@ impl SearchProvider for BraveProvider {
         }
         if !resp.status().is_success() {
             let msg = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Http { status, message: msg });
+            return Err(ProviderError::Http {
+                status,
+                message: msg,
+            });
         }
 
-        let body: BraveResponse = resp.json().await.map_err(|e| ProviderError::Parse(e.to_string()))?;
+        let body: BraveResponse = resp
+            .json()
+            .await
+            .map_err(|e| ProviderError::Parse(e.to_string()))?;
 
         let results: Vec<SearchResult> = body
             .web

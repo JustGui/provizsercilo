@@ -9,7 +9,7 @@ use proviz_core::models::SearchResult;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::{extract_domain, ProviderError, SearchProvider, build_client};
+use crate::{build_client, extract_domain, ProviderError, SearchProvider};
 
 pub struct SearxngProvider {
     client: reqwest::Client,
@@ -57,15 +57,12 @@ impl SearchProvider for SearxngProvider {
         api_key: &str,
     ) -> Result<Vec<SearchResult>, ProviderError> {
         let base = api_key.trim_end_matches('/');
-        let mut req = self
-            .client
-            .get(format!("{base}/search"))
-            .query(&[
-                ("q", query),
-                ("format", "json"),
-                ("categories", "general"),
-                ("pageno", "1"),
-            ]);
+        let mut req = self.client.get(format!("{base}/search")).query(&[
+            ("q", query),
+            ("format", "json"),
+            ("categories", "general"),
+            ("pageno", "1"),
+        ]);
 
         if let Some(lang) = language {
             req = req.query(&[("language", lang)]);
@@ -82,10 +79,16 @@ impl SearchProvider for SearxngProvider {
         }
         if !resp.status().is_success() {
             let msg = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Http { status, message: msg });
+            return Err(ProviderError::Http {
+                status,
+                message: msg,
+            });
         }
 
-        let body: SearxngResponse = resp.json().await.map_err(|e| ProviderError::Parse(e.to_string()))?;
+        let body: SearxngResponse = resp
+            .json()
+            .await
+            .map_err(|e| ProviderError::Parse(e.to_string()))?;
 
         let results: Vec<SearchResult> = body
             .results

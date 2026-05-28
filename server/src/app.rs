@@ -5,12 +5,12 @@ use axum::{
     routing::{delete, get, patch, post},
     Router,
 };
+use providers::SearchProvider;
 use proviz_core::{
     language_profile::ProfileMatcher,
     rate_limit::{RateLimitState, UsageTracker},
     selector::Selector,
 };
-use providers::SearchProvider;
 use tower_http::trace::TraceLayer;
 
 use crate::{
@@ -69,17 +69,12 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
     let profiles_content = std::fs::read_to_string(&config.profiles_path)
         .unwrap_or_else(|_| include_str!("../../profiles.toml").to_string());
 
-    let profiles = ProfileMatcher::load_toml(&profiles_content)
-        .unwrap_or_else(|e| {
-            tracing::warn!("Failed to parse profiles.toml: {e} — using empty profile set");
-            ProfileMatcher::new(vec![])
-        });
+    let profiles = ProfileMatcher::load_toml(&profiles_content).unwrap_or_else(|e| {
+        tracing::warn!("Failed to parse profiles.toml: {e} — using empty profile set");
+        ProfileMatcher::new(vec![])
+    });
 
-    let selector = Arc::new(Selector::new(
-        rate_limit.clone(),
-        usage.clone(),
-        profiles,
-    ));
+    let selector = Arc::new(Selector::new(rate_limit.clone(), usage.clone(), profiles));
 
     let providers = build_providers();
     let config = Arc::new(config);
@@ -139,7 +134,10 @@ fn build_admin_router(app_state: AppState) -> Router<AppState> {
         )
         .route("/keys/:id", patch(handlers::admin::handle_update_key))
         .route("/keys/:id", delete(handlers::admin::handle_delete_key))
-        .route("/keys/:id/resolve", get(handlers::admin::handle_resolve_key))
+        .route(
+            "/keys/:id/resolve",
+            get(handlers::admin::handle_resolve_key),
+        )
         .route("/groups", get(handlers::admin::handle_list_groups))
         .route("/groups", post(handlers::admin::handle_create_group))
         .route(
@@ -150,5 +148,8 @@ fn build_admin_router(app_state: AppState) -> Router<AppState> {
             "/groups/:slug/members/:key_id",
             delete(handlers::admin::handle_remove_group_member),
         )
-        .layer(middleware::from_fn_with_state(app_state, handlers::admin::require_admin_token))
+        .layer(middleware::from_fn_with_state(
+            app_state,
+            handlers::admin::require_admin_token,
+        ))
 }

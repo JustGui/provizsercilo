@@ -23,9 +23,7 @@ pub struct ProviderStatsOut {
     pub avg_latency_ms: Option<i64>,
 }
 
-pub async fn handle_stats(
-    State(state): State<AppState>,
-) -> Result<Json<StatsResponse>, AppError> {
+pub async fn handle_stats(State(state): State<AppState>) -> Result<Json<StatsResponse>, AppError> {
     let window = state.stats.window_stats(300);
     let by_prov = state.stats.by_provider_stats(3600); // 1h window for per-provider
 

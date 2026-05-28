@@ -1,12 +1,12 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
+use providers::{ProviderError, SearchProvider};
 use proviz_core::{
     key_resolver::{resolve_key, ResolveError},
     models::{Candidate, SearchLog, SearchResult},
     rate_limit::{ErrorType, RateLimitState, UsageTracker},
     selector::{DebugDecision, SelectRequest, Selector},
 };
-use providers::{ProviderError, SearchProvider};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -126,11 +126,8 @@ impl Executor {
                         let _ = storage.update_avg_latency(&pid, lat).await;
                     });
 
-                    self.stats.record_search(
-                        &candidate.provider.slug,
-                        false,
-                        duration_ms,
-                    );
+                    self.stats
+                        .record_search(&candidate.provider.slug, false, duration_ms);
 
                     let log = SearchLog {
                         id: Uuid::new_v4().to_string(),
@@ -179,8 +176,7 @@ impl Executor {
                         _ => ErrorType::Error,
                     };
 
-                    self.rate_limit
-                        .report_error(&candidate.api_key.id, et);
+                    self.rate_limit.report_error(&candidate.api_key.id, et);
 
                     let storage = Arc::clone(self.catalog.storage());
                     let kid = candidate.api_key.id.clone();
@@ -212,15 +208,13 @@ impl Executor {
         let provider = self
             .providers
             .get(&candidate.provider.slug)
-            .ok_or_else(|| {
-                ProviderError::Http {
-                    status: 0,
-                    message: format!("No adapter for provider '{}'", candidate.provider.slug),
-                }
+            .ok_or_else(|| ProviderError::Http {
+                status: 0,
+                message: format!("No adapter for provider '{}'", candidate.provider.slug),
             })?;
 
-        let api_key = resolve_key(&candidate.api_key.key_ref, &self.secrets_dir)
-            .map_err(|e| match e {
+        let api_key =
+            resolve_key(&candidate.api_key.key_ref, &self.secrets_dir).map_err(|e| match e {
                 ResolveError::NotFound(_) | ResolveError::FileRead { .. } => ProviderError::Http {
                     status: 401,
                     message: format!(

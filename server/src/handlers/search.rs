@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::{Duration, Instant}};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use axum::{extract::State, Json};
 use cache::{CacheEntry, QueryCache};
@@ -54,13 +57,9 @@ pub async fn handle_search(
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<SearchResponse>, AppError> {
     let n = req.n.clamp(1, 50);
-    let cache_ttl = req
-        .cache_ttl_secs
-        .unwrap_or(state.config.cache_ttl_secs);
+    let cache_ttl = req.cache_ttl_secs.unwrap_or(state.config.cache_ttl_secs);
     let timeout_ms = req.timeout_ms.unwrap_or(8000);
-    let max_fallbacks = req
-        .max_fallbacks
-        .unwrap_or(state.config.max_fallbacks);
+    let max_fallbacks = req.max_fallbacks.unwrap_or(state.config.max_fallbacks);
 
     // Cache check (bypass when ttl=0)
     if cache_ttl > 0 {
@@ -156,4 +155,3 @@ pub async fn handle_search(
         debug: result.debug_decisions,
     }))
 }
-

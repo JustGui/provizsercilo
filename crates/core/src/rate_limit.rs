@@ -125,14 +125,10 @@ impl Default for KeyUsage {
 impl KeyUsage {
     fn count_within(events: &mut VecDeque<Instant>, window: Duration) -> usize {
         let cutoff = Instant::now() - window;
-        while events.front().map_or(false, |t| *t < cutoff) {
+        while events.front().is_some_and(|t| *t < cutoff) {
             events.pop_front();
         }
         events.len()
-    }
-
-    fn push_event(events: &mut VecDeque<Instant>) {
-        events.push_back(Instant::now());
     }
 
     fn rpm_count(&self) -> usize {
