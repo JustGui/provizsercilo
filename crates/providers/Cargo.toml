@@ -1,0 +1,15 @@
+[package]
+name = "providers"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+proviz-core = { path = "../core" }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+tokio = { workspace = true }

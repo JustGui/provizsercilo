@@ -1,0 +1,62 @@
+version: "3.9"
+
+services:
+  # -----------------------------------------------------------------------
+  # Main search router
+  # -----------------------------------------------------------------------
+  proviz-sercilo:
+    build: .
+    image: proviz-sercilo:latest
+    ports:
+      - "${PORT:-8090}:8090"
+    environment:
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      CACHE_TTL_SECS: ${CACHE_TTL_SECS:-3600}
+      MAX_FALLBACKS: ${MAX_FALLBACKS:-3}
+      # Provider keys — resolved by key_ref at search time
+      BRAVE_KEY_1: ${BRAVE_KEY_1:-}
+      TAVILY_KEY_1: ${TAVILY_KEY_1:-}
+      MOJEEK_KEY_1: ${MOJEEK_KEY_1:-}
+      SERPER_KEY_1: ${SERPER_KEY_1:-}
+      # SearXNG and DDG bridge URLs stored as key_ref values
+      SEARXNG_INSTANCE_1: http://searxng:8080
+      DDG_BRIDGE_1: http://ddg-bridge:8001
+    volumes:
+      - proviz-data:/data
+      - ./profiles.toml:/etc/proviz-sercilo/profiles.toml:ro
+    depends_on:
+      - searxng
+      - ddg-bridge
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------------
+  # SearXNG — self-hosted meta-search engine
+  # -----------------------------------------------------------------------
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "8080:8080"
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8080/
+    volumes:
+      - searxng-data:/etc/searxng
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------------
+  # DDG Bridge — Python duckduckgo-search HTTP wrapper
+  # -----------------------------------------------------------------------
+  ddg-bridge:
+    build: ./bridges/ddgs-bridge
+    image: ddg-bridge:latest
+    ports:
+      - "8001:8001"
+    environment:
+      PORT: "8001"
+      SAFESEARCH: moderate
+    restart: unless-stopped
+
+volumes:
+  proviz-data:
+  searxng-data:

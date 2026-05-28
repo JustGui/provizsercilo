@@ -1,0 +1,49 @@
+# profiles.toml — Language/country routing profiles
+# Loaded once at startup. Requires restart to apply changes.
+#
+# Match order: (language, country) > (language, *) > (*, *)
+# exclude: provider slugs removed entirely from the candidate pool for this locale
+# priority: provider slugs that receive a coverage boost (first = highest)
+
+[[profiles]]
+language = "en"
+country  = "gb"
+priority = ["mojeek", "brave", "searxng", "tavily", "ddg"]
+exclude  = []
+
+[[profiles]]
+language = "en"
+country  = "*"
+priority = ["brave", "tavily", "mojeek", "serper", "searxng", "ddg"]
+exclude  = []
+
+[[profiles]]
+language = "fr"
+country  = "*"
+priority = ["brave", "tavily", "serper", "searxng", "ddg"]
+exclude  = ["mojeek"]
+
+[[profiles]]
+language = "es"
+country  = "*"
+priority = ["brave", "serper", "tavily", "searxng", "ddg"]
+exclude  = ["mojeek"]
+
+[[profiles]]
+language = "de"
+country  = "*"
+priority = ["brave", "serper", "tavily", "searxng", "ddg"]
+exclude  = ["mojeek"]
+
+[[profiles]]
+language = "pt"
+country  = "*"
+priority = ["brave", "serper", "tavily", "searxng", "ddg"]
+exclude  = ["mojeek"]
+
+# Default / unmatched — all providers eligible
+[[profiles]]
+language = "*"
+country  = "*"
+priority = ["brave", "tavily", "serper", "mojeek", "searxng", "ddg"]
+exclude  = []

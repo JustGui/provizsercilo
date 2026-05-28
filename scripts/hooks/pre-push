@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Pre-push hook: run tests and clippy before allowing a push.
+# Install via: bash scripts/install-hooks.sh
+set -euo pipefail
+
+echo "==> Running pre-push checks..."
+
+echo "--- cargo fmt --check"
+cargo fmt --check || {
+    echo ""
+    echo "ERROR: code is not formatted. Run 'cargo fmt' then re-stage."
+    exit 1
+}
+
+echo "--- cargo clippy"
+cargo clippy --workspace --all-targets -- -D warnings || {
+    echo ""
+    echo "ERROR: clippy found issues. Fix them before pushing."
+    exit 1
+}
+
+echo "--- cargo test --workspace"
+cargo test --workspace || {
+    echo ""
+    echo "ERROR: tests failed. Fix them before pushing."
+    exit 1
+}
+
+echo "==> All checks passed. Pushing..."
