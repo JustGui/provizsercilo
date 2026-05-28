@@ -174,7 +174,7 @@ impl Executor {
                             warn!(
                                 key_id = candidate.api_key.id,
                                 key_ref = candidate.api_key.key_ref,
-                                "auth error — key disabled for 300s"
+                                "auth error - key disabled for 300s"
                             );
                             ErrorType::Auth
                         }

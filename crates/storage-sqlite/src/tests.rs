@@ -160,7 +160,7 @@ async fn test_record_rate_event() {
     let k = make_key(&p.id, "key1");
     storage.create_api_key(k.clone()).await.unwrap();
     storage.record_rate_event(&k.id, "rpm").await.unwrap();
-    // No assertion needed — just ensure it doesn't error
+    // No assertion needed - just ensure it doesn't error
 }
 
 #[tokio::test]

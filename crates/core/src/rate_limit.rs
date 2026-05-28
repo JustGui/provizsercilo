@@ -48,7 +48,7 @@ impl ErrorType {
 }
 
 // ---------------------------------------------------------------------------
-// RateLimitState — reactive cooldowns
+// RateLimitState - reactive cooldowns
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default)]
@@ -98,7 +98,7 @@ pub enum KeyState {
 }
 
 // ---------------------------------------------------------------------------
-// UsageTracker — proactive sliding-window rate budgets
+// UsageTracker - proactive sliding-window rate budgets
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]

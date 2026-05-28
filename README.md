@@ -4,13 +4,13 @@ Self-hosted Rust HTTP service that acts as a smart search-engine router. Callers
 
 ## Features
 
-- **Provider selection** — scores candidates by rate-limit headroom, language/country profile, and traffic balance
-- **Automatic fallback** — cascades through providers on errors, 429s, or empty results
-- **Rate-limit tracking** — sliding-window budgets (RPS / RPM / RPD) per API key, reactive cooldowns on error responses
-- **Language profiles** — `profiles.toml` routes queries to region-optimal providers
-- **In-memory cache** — configurable TTL via `CACHE_TTL_SECS`
-- **Key rotation** — multiple API keys per provider, round-robin with cooldown awareness
-- **Admin API** — manage providers and keys at runtime; reload catalog without restart
+- **Provider selection** - scores candidates by rate-limit headroom, language/country profile, and traffic balance
+- **Automatic fallback** - cascades through providers on errors, 429s, or empty results
+- **Rate-limit tracking** - sliding-window budgets (RPS / RPM / RPD) per API key, reactive cooldowns on error responses
+- **Language profiles** - `profiles.toml` routes queries to region-optimal providers
+- **In-memory cache** - configurable TTL via `CACHE_TTL_SECS`
+- **Key rotation** - multiple API keys per provider, round-robin with cooldown awareness
+- **Admin API** - manage providers and keys at runtime; reload catalog without restart
 
 ## Providers
 
@@ -50,7 +50,7 @@ Brings up ProvizSercilo, SearXNG, and the DDG bridge together.
 | `PORT` | `8090` | Listen port |
 | `DATABASE_PATH` | `./proviz.db` | SQLite database file |
 | `PROFILES_PATH` | `./profiles.toml` | Language/country routing config |
-| `ADMIN_TOKEN` | — | Required to access `/admin/*` endpoints |
+| `ADMIN_TOKEN` | - | Required to access `/admin/*` endpoints |
 | `SECRETS_DIR` | `/run/secrets` | Directory scanned first when resolving key refs |
 | `CACHE_TTL_SECS` | `3600` | Query cache TTL; `0` disables cache |
 | `MAX_FALLBACKS` | `3` | Maximum provider fallback attempts per request |

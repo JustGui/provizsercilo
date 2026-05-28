@@ -25,8 +25,8 @@ impl ResolveError {
 /// Resolve a key_ref to its actual value.
 ///
 /// Resolution order:
-///   1. `$SECRETS_DIR/<key_ref>` — Docker secrets file
-///   2. `std::env::var(key_ref)` — environment variable
+///   1. `$SECRETS_DIR/<key_ref>` - Docker secrets file
+///   2. `std::env::var(key_ref)` - environment variable
 ///
 /// The key value is never logged or stored beyond the duration of the caller's use.
 pub fn resolve_key(key_ref: &str, secrets_dir: &Path) -> Result<String, ResolveError> {

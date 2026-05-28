@@ -1,4 +1,4 @@
-# profiles.toml — Language/country routing profiles
+# profiles.toml - Language/country routing profiles
 # Loaded once at startup. Requires restart to apply changes.
 #
 # Match order: (language, country) > (language, *) > (*, *)
@@ -41,7 +41,7 @@ country  = "*"
 priority = ["brave", "serper", "tavily", "searxng", "ddg"]
 exclude  = ["mojeek"]
 
-# Default / unmatched — all providers eligible
+# Default / unmatched - all providers eligible
 [[profiles]]
 language = "*"
 country  = "*"

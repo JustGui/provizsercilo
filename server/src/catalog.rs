@@ -43,7 +43,7 @@ impl Catalog {
             }
         }
 
-        // No group — all active keys from all active providers
+        // No group - all active keys from all active providers
         self.api_keys
             .iter()
             .filter(|k| k.is_active)

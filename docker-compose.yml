@@ -15,7 +15,7 @@ services:
       LOG_FORMAT: ${LOG_FORMAT:-json}
       CACHE_TTL_SECS: ${CACHE_TTL_SECS:-3600}
       MAX_FALLBACKS: ${MAX_FALLBACKS:-3}
-      # Provider keys — resolved by key_ref at search time
+      # Provider keys - resolved by key_ref at search time
       BRAVE_KEY_1: ${BRAVE_KEY_1:-}
       TAVILY_KEY_1: ${TAVILY_KEY_1:-}
       MOJEEK_KEY_1: ${MOJEEK_KEY_1:-}
@@ -32,7 +32,7 @@ services:
     restart: unless-stopped
 
   # -----------------------------------------------------------------------
-  # SearXNG — self-hosted meta-search engine
+  # SearXNG - self-hosted meta-search engine
   # -----------------------------------------------------------------------
   searxng:
     image: searxng/searxng:latest
@@ -45,7 +45,7 @@ services:
     restart: unless-stopped
 
   # -----------------------------------------------------------------------
-  # DDG Bridge — Python duckduckgo-search HTTP wrapper
+  # DDG Bridge - Python duckduckgo-search HTTP wrapper
   # -----------------------------------------------------------------------
   ddg-bridge:
     build: ./bridges/ddgs-bridge

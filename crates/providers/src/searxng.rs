@@ -1,4 +1,4 @@
-/// SearXNG provider — calls a self-hosted SearXNG instance's JSON API.
+/// SearXNG provider - calls a self-hosted SearXNG instance's JSON API.
 ///
 /// The "api_key" for this provider is the SearXNG instance base URL
 /// (e.g. "http://localhost:8080" or "https://searx.example.com").

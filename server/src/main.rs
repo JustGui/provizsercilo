@@ -35,13 +35,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if config.admin_token.is_none() {
-        warn!("ADMIN_TOKEN not set — admin endpoints are disabled");
+        warn!("ADMIN_TOKEN not set - admin endpoints are disabled");
     }
 
     if !config.profiles_path.exists() {
         warn!(
             path = %config.profiles_path.display(),
-            "profiles.toml not found — using empty language profile set"
+            "profiles.toml not found - using empty language profile set"
         );
     }
 

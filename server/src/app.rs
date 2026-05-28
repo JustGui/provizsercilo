@@ -70,7 +70,7 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
         .unwrap_or_else(|_| include_str!("../../profiles.toml").to_string());
 
     let profiles = ProfileMatcher::load_toml(&profiles_content).unwrap_or_else(|e| {
-        tracing::warn!("Failed to parse profiles.toml: {e} — using empty profile set");
+        tracing::warn!("Failed to parse profiles.toml: {e} - using empty profile set");
         ProfileMatcher::new(vec![])
     });
 

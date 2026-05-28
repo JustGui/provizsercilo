@@ -1,5 +1,5 @@
 """
-DDG Bridge — thin FastAPI wrapper around duckduckgo-search.
+DDG Bridge - thin FastAPI wrapper around duckduckgo-search.
 
 Called by ProvizSercilo as a standard HTTP provider.
 The Rust service treats this bridge like any other provider:

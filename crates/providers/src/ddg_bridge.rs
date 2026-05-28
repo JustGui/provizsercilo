@@ -1,4 +1,4 @@
-/// DDG Bridge provider — calls the Python ddgs-bridge HTTP service.
+/// DDG Bridge provider - calls the Python ddgs-bridge HTTP service.
 ///
 /// The "api_key" for this provider is the bridge base URL (e.g. "http://localhost:8001").
 /// This follows the same key rotation model as other providers: each bridge instance
@@ -42,7 +42,7 @@ impl SearchProvider for DdgBridgeProvider {
 
     /// For this provider, api_key is the bridge base URL.
     fn requires_api_key(&self) -> bool {
-        true // key_ref holds the bridge URL — resolution still required
+        true // key_ref holds the bridge URL - resolution still required
     }
 
     async fn search(
