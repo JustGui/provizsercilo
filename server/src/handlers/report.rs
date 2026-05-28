@@ -9,7 +9,6 @@ pub struct ReportRequest {
     pub outcome: String,
     pub error_type: Option<String>,
     pub remaining_requests: Option<i64>,
-    pub remaining_tokens: Option<i64>,
     pub limit_requests: Option<i64>,
     #[serde(default)]
     pub sync_limits: bool,
