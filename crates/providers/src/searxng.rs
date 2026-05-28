@@ -33,7 +33,8 @@ struct SearxngResult {
     url: String,
     title: String,
     content: Option<String>,
-    publishedDate: Option<String>,
+    #[serde(rename = "publishedDate")]
+    published_date: Option<String>,
     language: Option<String>,
 }
 
@@ -101,7 +102,7 @@ impl SearchProvider for SearxngProvider {
                 title: r.title,
                 snippet: r.content.unwrap_or_default(),
                 rank: i,
-                published_date: r.publishedDate,
+                published_date: r.published_date,
                 language: r.language,
             })
             .collect();
