@@ -10,7 +10,7 @@ use tracing::info;
 
 use proviz_core::{models::SearchResult, selector::DebugDecision};
 
-use crate::{app::AppState, error::AppError};
+use crate::{app::AppState, error::AppError, executor::SearchParams};
 
 #[derive(Deserialize)]
 pub struct SearchRequest {
@@ -95,19 +95,19 @@ pub async fn handle_search(
 
     let result = state
         .executor
-        .search(
-            &req.query,
-            &query_hash,
-            req.language.as_deref(),
-            req.country.as_deref(),
-            req.group.as_deref(),
+        .search(SearchParams {
+            query: req.query.clone(),
+            query_hash: query_hash.clone(),
+            language: req.language.clone(),
+            country: req.country.clone(),
+            group_slug: req.group.clone(),
             n,
             timeout_ms,
             max_fallbacks,
-            req.debug,
-            req.exclude_key_ids,
-            req.exclude_providers,
-        )
+            debug: req.debug,
+            exclude_key_ids: req.exclude_key_ids,
+            exclude_provider_slugs: req.exclude_providers,
+        })
         .await?;
 
     info!(
