@@ -1,0 +1,50 @@
+# Build artifacts
+target/
+
+# Environment files — API keys and secrets must never enter the image
+.env
+.env.*
+!.env.example
+
+# Secrets / key material
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+secrets/
+.secrets/
+
+# Databases (may contain cached key refs or sensitive data)
+*.db
+*.sqlite
+*.sqlite3
+
+# VPN / proxy config (contains credentials)
+vpn.toml
+
+# IDE and editor config
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
+
+# Git
+.git/
+.gitignore
+
+# Python virtual envs (DDG bridge)
+bridges/ddgs-bridge/.venv/
+bridges/ddgs-bridge/venv/
+bridges/ddgs-bridge/__pycache__/
+
+# Docs / dev files (not needed in image)
+README.md
+CLAUDE.md
+PROMPT.md
+LICENSE
+Makefile
+scripts/

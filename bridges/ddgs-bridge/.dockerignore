@@ -1,0 +1,25 @@
+# Secrets / environment files
+.env
+.env.*
+
+# Keys and certificates
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+secrets/
+.secrets/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
