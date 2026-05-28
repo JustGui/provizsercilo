@@ -4,6 +4,7 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
+COPY profiles.toml ./
 COPY crates/ crates/
 COPY server/ server/
 
