@@ -7,10 +7,24 @@ use proviz_core::{
     rate_limit::{ErrorType, RateLimitState, UsageTracker},
     selector::{DebugDecision, SelectRequest, Selector},
 };
-use tracing::{debug, warn};
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::{catalog::CatalogStore, stats::StatsTracker};
+
+pub struct SearchParams {
+    pub query: String,
+    pub query_hash: String,
+    pub language: Option<String>,
+    pub country: Option<String>,
+    pub group_slug: Option<String>,
+    pub n: usize,
+    pub timeout_ms: u64,
+    pub max_fallbacks: usize,
+    pub debug: bool,
+    pub exclude_key_ids: Vec<String>,
+    pub exclude_provider_slugs: Vec<String>,
+}
 
 /// Result of a full search execution including fallback chain.
 pub struct ExecutionResult {
@@ -30,7 +44,6 @@ pub struct Executor {
     rate_limit: RateLimitState,
     usage: UsageTracker,
     secrets_dir: PathBuf,
-    storage: Arc<storage_sqlite::Storage>,
     stats: Arc<StatsTracker>,
 }
 
@@ -42,7 +55,6 @@ impl Executor {
         rate_limit: RateLimitState,
         usage: UsageTracker,
         secrets_dir: PathBuf,
-        storage: Arc<storage_sqlite::Storage>,
         stats: Arc<StatsTracker>,
     ) -> Self {
         Self {
@@ -52,28 +64,17 @@ impl Executor {
             rate_limit,
             usage,
             secrets_dir,
-            storage,
             stats,
         }
     }
 
     pub async fn search(
         &self,
-        query: &str,
-        query_hash: &str,
-        language: Option<&str>,
-        country: Option<&str>,
-        group_slug: Option<&str>,
-        n: usize,
-        timeout_ms: u64,
-        max_fallbacks: usize,
-        debug: bool,
-        exclude_key_ids: Vec<String>,
-        exclude_provider_slugs: Vec<String>,
+        params: SearchParams,
     ) -> Result<ExecutionResult, crate::error::AppError> {
         let start = Instant::now();
         let catalog = self.catalog.read().await;
-        let pool = catalog.candidates(group_slug);
+        let pool = catalog.candidates(params.group_slug.as_deref());
         drop(catalog);
 
         if pool.is_empty() {
@@ -83,10 +84,10 @@ impl Executor {
         }
 
         let req = SelectRequest {
-            language: language.map(str::to_string),
-            country: country.map(str::to_string),
-            exclude_key_ids,
-            exclude_provider_slugs,
+            language: params.language.clone(),
+            country: params.country.clone(),
+            exclude_key_ids: params.exclude_key_ids,
+            exclude_provider_slugs: params.exclude_provider_slugs,
         };
 
         let mut excluded: Vec<String> = Vec::new();
@@ -95,22 +96,29 @@ impl Executor {
         let mut attempts = 0;
 
         loop {
-            if attempts > max_fallbacks {
+            if attempts > params.max_fallbacks {
                 break;
             }
             attempts += 1;
 
-            let selection = self.selector.select(&pool, &req, &excluded, debug);
+            let selection = self.selector.select(&pool, &req, &excluded, params.debug);
             let Some((candidate, decisions)) = selection else {
                 break;
             };
 
-            if debug {
+            if params.debug {
                 all_decisions.extend(decisions);
             }
 
             let result = self
-                .try_candidate(&candidate, query, n, language, country, timeout_ms)
+                .try_candidate(
+                    &candidate,
+                    &params.query,
+                    params.n,
+                    params.language.as_deref(),
+                    params.country.as_deref(),
+                    params.timeout_ms,
+                )
                 .await;
 
             match result {
@@ -118,7 +126,6 @@ impl Executor {
                     let duration_ms = start.elapsed().as_millis() as u64;
                     chain_parts.push(format!("{}:{}", candidate.provider.slug, "ok"));
 
-                    // Update latency rolling average
                     let storage = Arc::clone(self.catalog.storage());
                     let pid = candidate.provider.id.clone();
                     let lat = duration_ms as i64;
@@ -131,13 +138,13 @@ impl Executor {
 
                     let log = SearchLog {
                         id: Uuid::new_v4().to_string(),
-                        query_hash: query_hash.to_string(),
-                        group_slug: group_slug.map(str::to_string),
-                        language: language.map(str::to_string),
-                        country: country.map(str::to_string),
+                        query_hash: params.query_hash.clone(),
+                        group_slug: params.group_slug.clone(),
+                        language: params.language.clone(),
+                        country: params.country.clone(),
                         provider_slug: Some(candidate.provider.slug.clone()),
                         api_key_id: Some(candidate.api_key.id.clone()),
-                        n_requested: Some(n as i64),
+                        n_requested: Some(params.n as i64),
                         n_returned: Some(results.len() as i64),
                         duration_ms: Some(duration_ms as i64),
                         cache_hit: false,
@@ -153,7 +160,7 @@ impl Executor {
                         api_key_id: candidate.api_key.id,
                         duration_ms,
                         fallback_chain: chain_parts.join(","),
-                        debug_decisions: debug.then_some(all_decisions),
+                        debug_decisions: params.debug.then_some(all_decisions),
                         log,
                     });
                 }
@@ -234,7 +241,6 @@ impl Executor {
 
         self.usage.complete(&candidate.api_key.id);
 
-        // Touch the key's last_used_at asynchronously
         let storage = Arc::clone(self.catalog.storage());
         let kid = candidate.api_key.id.clone();
         tokio::spawn(async move {
