@@ -31,7 +31,7 @@ impl StatsTracker {
         });
         // Prune entries older than 24h to prevent unbounded growth.
         let cutoff = Instant::now() - std::time::Duration::from_secs(86400);
-        while events.front().map_or(false, |e| e.at < cutoff) {
+        while events.front().is_some_and(|e| e.at < cutoff) {
             events.pop_front();
         }
     }
