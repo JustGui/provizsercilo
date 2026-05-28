@@ -86,7 +86,6 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
         rate_limit.clone(),
         usage.clone(),
         config.secrets_dir.clone(),
-        Arc::clone(&storage),
         Arc::clone(&stats),
     ));
 
