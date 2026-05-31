@@ -25,6 +25,9 @@ search:
   safe_search: 0
   autocomplete: ""
   default_lang: ""
+  formats:
+    - html
+    - json
 
 ui:
   static_use_hash: true
