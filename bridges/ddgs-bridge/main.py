@@ -19,7 +19,7 @@ Optional env vars:
 import os
 from typing import Optional
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
