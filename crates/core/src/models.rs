@@ -13,6 +13,8 @@ pub struct Provider {
     pub coverage_scores: HashMap<String, f64>,
     pub notes: Option<String>,
     pub created_at: String,
+    #[serde(default)]
+    pub no_cache: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

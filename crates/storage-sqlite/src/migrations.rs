@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS providers (
     avg_latency_ms INTEGER,
     coverage_scores TEXT NOT NULL DEFAULT '{}',
     notes         TEXT,
+    no_cache      INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

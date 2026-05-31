@@ -25,6 +25,14 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI(title="DDG Bridge", version="0.1.0")
 
+def _ddg_region(language: Optional[str], country: Optional[str]) -> str:
+    if not language:
+        return "wt-wt"
+    lang = language.lower()
+    if country:
+        return f"{lang}-{country.lower()}"
+    return "wt-wt" if lang == "en" else f"{lang}-{lang}"
+
 
 @app.get("/health")
 def health():
@@ -36,8 +44,10 @@ def search(
     q: str = Query(..., description="Search query"),
     n: int = Query(10, ge=1, le=50, description="Number of results"),
     language: Optional[str] = Query(None, description="ISO 639-1 language code"),
-    region: Optional[str] = Query(None, description="DDG region code (e.g. 'fr-fr')"),
+    country: Optional[str] = Query(None, description="ISO 3166-1 alpha-2 country code"),
+    region: Optional[str] = Query(None, description="DDG region code override (e.g. 'fr-fr')"),
     safesearch: str = Query(os.getenv("SAFESEARCH", "moderate")),
+    backend: Optional[str] = Query(None, description="DDGS backend: duckduckgo, yahoo, brave"),
 ):
     """
     Execute a DDG web search and return normalised results.
@@ -52,11 +62,15 @@ def search(
         "max_results": n,
         "safesearch": safesearch,
     }
+
+    # Caller-supplied region takes precedence; otherwise derive from language/country.
     if region:
         kwargs["region"] = region
-    elif language:
-        # Map language to a DDG region code (best-effort; DDG uses e.g. "fr-fr")
-        kwargs["region"] = f"{language}-{language}"
+    else:
+        kwargs["region"] = _ddg_region(language, country)
+
+    if backend:
+        kwargs["backend"] = backend
 
     try:
         raw = DDGS().text(q, **kwargs) or []

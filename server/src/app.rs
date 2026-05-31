@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use axum::{
     middleware,
@@ -28,6 +31,7 @@ pub struct AppState {
     pub stats: Arc<StatsTracker>,
     pub rate_limit: RateLimitState,
     pub usage: UsageTracker,
+    pub no_cache_providers: Arc<HashSet<String>>,
 }
 
 pub fn build_providers() -> HashMap<String, Arc<dyn SearchProvider>> {
@@ -50,7 +54,25 @@ pub fn build_providers() -> HashMap<String, Arc<dyn SearchProvider>> {
     );
     map.insert(
         "ddg".to_string(),
-        Arc::new(providers::ddg_bridge::DdgBridgeProvider::default()),
+        Arc::new(providers::ddg_bridge::DdgBridgeProvider::new_fanout()),
+    );
+    map.insert(
+        "ddg-duckduckgo".to_string(),
+        Arc::new(providers::ddg_bridge::DdgBridgeProvider::new_backend(
+            "duckduckgo",
+        )),
+    );
+    map.insert(
+        "ddg-yahoo".to_string(),
+        Arc::new(providers::ddg_bridge::DdgBridgeProvider::new_backend(
+            "yahoo",
+        )),
+    );
+    map.insert(
+        "ddg-brave".to_string(),
+        Arc::new(providers::ddg_bridge::DdgBridgeProvider::new_backend(
+            "brave",
+        )),
     );
     map.insert(
         "searxng".to_string(),
@@ -69,6 +91,18 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
     };
 
     let catalog = CatalogStore::new(Arc::clone(&storage)).await?;
+
+    let no_cache_providers: Arc<HashSet<String>> = {
+        let cat = catalog.read().await;
+        Arc::new(
+            cat.providers
+                .iter()
+                .filter(|p| p.no_cache)
+                .map(|p| p.slug.clone())
+                .collect(),
+        )
+    };
+
     let cache = Arc::new(cache::QueryCache::new());
     let stats = Arc::new(StatsTracker::new());
     let rate_limit = RateLimitState::default();
@@ -106,6 +140,7 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
         stats,
         rate_limit,
         usage,
+        no_cache_providers,
     };
 
     let admin_router = build_admin_router(state.clone());

@@ -19,6 +19,7 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         avg_latency_ms BIGINT, \
         coverage_scores TEXT NOT NULL DEFAULT '{}', \
         notes TEXT, \
+        no_cache BOOLEAN NOT NULL DEFAULT FALSE, \
         created_at TEXT NOT NULL DEFAULT (to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))\
     )",
     "CREATE TABLE IF NOT EXISTS ps_api_keys (\
@@ -104,6 +105,7 @@ fn read_provider(row: &PgRow) -> Result<Provider, StorageError> {
         avg_latency_ms: row.try_get("avg_latency_ms").map_err(row_err)?,
         coverage_scores,
         notes: row.try_get("notes").map_err(row_err)?,
+        no_cache: row.try_get("no_cache").map_err(row_err)?,
         created_at: row.try_get("created_at").map_err(row_err)?,
     })
 }
@@ -147,7 +149,7 @@ impl StorageBackend for PgStorage {
     async fn list_providers(&self) -> Result<Vec<Provider>, StorageError> {
         let rows = sqlx::query(
             "SELECT id, slug, name, base_url, is_active, priority, avg_latency_ms,
-                    coverage_scores, notes, created_at
+                    coverage_scores, notes, no_cache, created_at
              FROM ps_providers ORDER BY priority ASC",
         )
         .fetch_all(&self.pool)
@@ -159,7 +161,7 @@ impl StorageBackend for PgStorage {
     async fn get_provider_by_slug(&self, slug: &str) -> Result<Provider, StorageError> {
         let row = sqlx::query(
             "SELECT id, slug, name, base_url, is_active, priority, avg_latency_ms,
-                    coverage_scores, notes, created_at
+                    coverage_scores, notes, no_cache, created_at
              FROM ps_providers WHERE slug = $1",
         )
         .bind(slug)
@@ -174,8 +176,8 @@ impl StorageBackend for PgStorage {
         let cs_json = serde_json::to_string(&p.coverage_scores).map_err(json_err)?;
         sqlx::query(
             "INSERT INTO ps_providers (id, slug, name, base_url, is_active, priority,
-             avg_latency_ms, coverage_scores, notes)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+             avg_latency_ms, coverage_scores, notes, no_cache)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(&p.id)
         .bind(&p.slug)
@@ -186,6 +188,7 @@ impl StorageBackend for PgStorage {
         .bind(p.avg_latency_ms)
         .bind(&cs_json)
         .bind(&p.notes)
+        .bind(p.no_cache)
         .execute(&self.pool)
         .await
         .map_err(pg_err)?;

@@ -18,6 +18,7 @@ struct ProviderDef {
     priority: i64,
     /// Env-var prefix used to find key refs (e.g. "BRAVE_KEY" → BRAVE_KEY_1, BRAVE_KEY_2…)
     key_prefix: &'static str,
+    no_cache: bool,
 }
 
 // Priority convention: lower number = preferred (matches norm_inv scoring and group member p0/p1/…).
@@ -29,46 +30,79 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
             name: "DuckDuckGo Bridge",
             priority: 1,
             key_prefix: "DDG_BRIDGE",
+            no_cache: true,
+        },
+    ),
+    (
+        "ddg-duckduckgo",
+        ProviderDef {
+            name: "DDG Bridge (DuckDuckGo backend)",
+            priority: 2,
+            key_prefix: "DDG_BRIDGE",
+            no_cache: true,
+        },
+    ),
+    (
+        "ddg-yahoo",
+        ProviderDef {
+            name: "DDG Bridge (Yahoo backend)",
+            priority: 3,
+            key_prefix: "DDG_BRIDGE",
+            no_cache: true,
+        },
+    ),
+    (
+        "ddg-brave",
+        ProviderDef {
+            name: "DDG Bridge (Brave backend)",
+            priority: 4,
+            key_prefix: "DDG_BRIDGE",
+            no_cache: true,
         },
     ),
     (
         "searxng",
         ProviderDef {
             name: "SearXNG",
-            priority: 2,
+            priority: 5,
             key_prefix: "SEARXNG_INSTANCE",
+            no_cache: false,
         },
     ),
     (
         "brave",
         ProviderDef {
             name: "Brave Search",
-            priority: 3,
+            priority: 6,
             key_prefix: "BRAVE_KEY",
+            no_cache: false,
         },
     ),
     (
         "tavily",
         ProviderDef {
             name: "Tavily",
-            priority: 4,
+            priority: 7,
             key_prefix: "TAVILY_KEY",
+            no_cache: false,
         },
     ),
     (
         "mojeek",
         ProviderDef {
             name: "Mojeek",
-            priority: 5,
+            priority: 8,
             key_prefix: "MOJEEK_KEY",
+            no_cache: false,
         },
     ),
     (
         "serper",
         ProviderDef {
             name: "Serper (Google)",
-            priority: 6,
+            priority: 9,
             key_prefix: "SERPER_KEY",
+            no_cache: false,
         },
     ),
 ];
@@ -83,13 +117,13 @@ pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
         .map(|p| (p.slug.clone(), p.id.clone()))
         .collect();
 
-    // Build a set of existing key_refs to avoid duplicate key inserts.
-    let existing_key_refs: std::collections::HashSet<String> = storage
+    // Build a (provider_id, key_ref) set to avoid duplicate inserts per provider.
+    let existing_key_pairs: std::collections::HashSet<(String, String)> = storage
         .list_api_keys()
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|k| k.key_ref)
+        .map(|k| (k.provider_id, k.key_ref))
         .collect();
 
     for (slug, def) in PROVIDERS {
@@ -127,6 +161,7 @@ pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
                 avg_latency_ms: None,
                 coverage_scores: HashMap::new(),
                 notes: None,
+                no_cache: def.no_cache,
                 created_at: String::new(),
             };
             match storage.create_provider(p).await {
@@ -141,9 +176,9 @@ pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
             }
         };
 
-        // Add any key refs not already present.
+        // Add any key refs not already present for this provider.
         for (key_ref, _) in &key_refs {
-            if existing_key_refs.contains(key_ref) {
+            if existing_key_pairs.contains(&(provider_id.clone(), key_ref.clone())) {
                 continue;
             }
             let key = ApiKey {

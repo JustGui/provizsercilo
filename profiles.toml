@@ -8,42 +8,42 @@
 [[profiles]]
 language = "en"
 country  = "gb"
-priority = ["mojeek", "brave", "searxng", "tavily", "ddg"]
+priority = ["mojeek", "brave", "searxng", "tavily", "ddg", "ddg-duckduckgo", "ddg-yahoo", "ddg-brave"]
 exclude  = []
 
 [[profiles]]
 language = "en"
 country  = "*"
-priority = ["brave", "tavily", "mojeek", "serper", "searxng", "ddg"]
+priority = ["brave", "tavily", "mojeek", "serper", "searxng", "ddg", "ddg-duckduckgo", "ddg-yahoo", "ddg-brave"]
 exclude  = []
 
 [[profiles]]
 language = "fr"
 country  = "*"
-priority = ["brave", "tavily", "serper", "searxng", "ddg"]
+priority = ["brave", "tavily", "serper", "searxng", "ddg", "ddg-duckduckgo", "ddg-yahoo", "ddg-brave"]
 exclude  = ["mojeek"]
 
 [[profiles]]
 language = "es"
 country  = "*"
-priority = ["brave", "serper", "tavily", "searxng", "ddg"]
+priority = ["brave", "serper", "tavily", "searxng", "ddg", "ddg-duckduckgo", "ddg-yahoo", "ddg-brave"]
 exclude  = ["mojeek"]
 
 [[profiles]]
 language = "de"
 country  = "*"
-priority = ["brave", "serper", "tavily", "searxng", "ddg"]
+priority = ["brave", "serper", "tavily", "searxng", "ddg", "ddg-duckduckgo", "ddg-yahoo", "ddg-brave"]
 exclude  = ["mojeek"]
 
 [[profiles]]
 language = "pt"
 country  = "*"
-priority = ["brave", "serper", "tavily", "searxng", "ddg"]
+priority = ["brave", "serper", "tavily", "searxng", "ddg", "ddg-duckduckgo", "ddg-yahoo", "ddg-brave"]
 exclude  = ["mojeek"]
 
 # Default / unmatched - all providers eligible
 [[profiles]]
 language = "*"
 country  = "*"
-priority = ["brave", "tavily", "serper", "mojeek", "searxng", "ddg"]
+priority = ["brave", "tavily", "serper", "mojeek", "searxng", "ddg", "ddg-duckduckgo", "ddg-yahoo", "ddg-brave"]
 exclude  = []

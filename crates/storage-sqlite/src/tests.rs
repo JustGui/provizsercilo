@@ -21,6 +21,7 @@ fn make_provider(slug: &str) -> Provider {
         avg_latency_ms: None,
         coverage_scores: HashMap::new(),
         notes: None,
+        no_cache: false,
         created_at: String::new(),
     }
 }

@@ -89,6 +89,7 @@ pub async fn handle_create_provider(
         avg_latency_ms: None,
         coverage_scores: req.coverage_scores.unwrap_or_default(),
         notes: req.notes,
+        no_cache: false,
         created_at: String::new(),
     };
     let created = state.storage.create_provider(provider).await?;

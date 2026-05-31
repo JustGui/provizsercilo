@@ -61,8 +61,19 @@ pub async fn handle_search(
     let timeout_ms = req.timeout_ms.unwrap_or(8000);
     let max_fallbacks = req.max_fallbacks.unwrap_or(state.config.max_fallbacks);
 
-    // Cache check (bypass when ttl=0)
-    if cache_ttl > 0 {
+    // Determine whether all providers in the requested group are no-cache.
+    // If so, skip the cache read (and also the write, handled below).
+    let group_all_no_cache = {
+        let catalog = state.catalog.read().await;
+        let candidates = catalog.candidates(req.group.as_deref());
+        !candidates.is_empty()
+            && candidates
+                .iter()
+                .all(|c| state.no_cache_providers.contains(&c.provider.slug))
+    };
+
+    // Cache read (bypass when ttl=0 or all providers in the group are no-cache)
+    if cache_ttl > 0 && !group_all_no_cache {
         let key = QueryCache::cache_key(
             &req.query,
             req.language.as_deref(),
@@ -119,8 +130,8 @@ pub async fn handle_search(
         cache_hit = false,
     );
 
-    // Store result in cache
-    if cache_ttl > 0 {
+    // Store result in cache — skip if the winning provider is marked no_cache.
+    if cache_ttl > 0 && !state.no_cache_providers.contains(&result.provider_slug) {
         let key = query_hash.clone();
         state.cache.set(
             key,

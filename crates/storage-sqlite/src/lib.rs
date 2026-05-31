@@ -127,11 +127,12 @@ impl StorageBackend for Storage {
                 Option<i64>,
                 String,
                 Option<String>,
+                bool,
                 String,
             );
             let mut stmt = conn.prepare(
                 "SELECT id, slug, name, base_url, is_active, priority, avg_latency_ms,
-                        coverage_scores, notes, created_at
+                        coverage_scores, notes, no_cache, created_at
                  FROM providers ORDER BY priority ASC",
             )?;
             let mapped = stmt.query_map([], |row| {
@@ -145,7 +146,8 @@ impl StorageBackend for Storage {
                     row.get::<_, Option<i64>>(6)?,
                     row.get::<_, String>(7)?,
                     row.get::<_, Option<String>>(8)?,
-                    row.get::<_, String>(9)?,
+                    row.get::<_, bool>(9)?,
+                    row.get::<_, String>(10)?,
                 ))
             })?;
             let raw: Vec<Row> = mapped.collect::<rusqlite::Result<_>>()?;
@@ -161,6 +163,7 @@ impl StorageBackend for Storage {
                         avg_latency_ms,
                         cs_json,
                         notes,
+                        no_cache,
                         created_at,
                     )| {
                         let coverage_scores: HashMap<String, f64> = serde_json::from_str(&cs_json)?;
@@ -174,6 +177,7 @@ impl StorageBackend for Storage {
                             avg_latency_ms,
                             coverage_scores,
                             notes,
+                            no_cache,
                             created_at,
                         })
                     },
@@ -189,7 +193,7 @@ impl StorageBackend for Storage {
             let row = conn
                 .query_row(
                     "SELECT id, slug, name, base_url, is_active, priority, avg_latency_ms,
-                        coverage_scores, notes, created_at
+                        coverage_scores, notes, no_cache, created_at
                  FROM providers WHERE slug = ?1",
                     params![slug],
                     |row| {
@@ -203,7 +207,8 @@ impl StorageBackend for Storage {
                             row.get::<_, Option<i64>>(6)?,
                             row.get::<_, String>(7)?,
                             row.get::<_, Option<String>>(8)?,
-                            row.get::<_, String>(9)?,
+                            row.get::<_, bool>(9)?,
+                            row.get::<_, String>(10)?,
                         ))
                     },
                 )
@@ -218,6 +223,7 @@ impl StorageBackend for Storage {
                 avg_latency_ms,
                 cs_json,
                 notes,
+                no_cache,
                 created_at,
             ) = row;
             let coverage_scores: HashMap<String, f64> = serde_json::from_str(&cs_json)?;
@@ -231,6 +237,7 @@ impl StorageBackend for Storage {
                 avg_latency_ms,
                 coverage_scores,
                 notes,
+                no_cache,
                 created_at,
             })
         })
@@ -242,8 +249,8 @@ impl StorageBackend for Storage {
             let cs_json = serde_json::to_string(&p.coverage_scores)?;
             conn.execute(
                 "INSERT INTO providers (id, slug, name, base_url, is_active, priority,
-                 avg_latency_ms, coverage_scores, notes)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 avg_latency_ms, coverage_scores, notes, no_cache)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     p.id,
                     p.slug,
@@ -253,7 +260,8 @@ impl StorageBackend for Storage {
                     p.priority,
                     p.avg_latency_ms,
                     cs_json,
-                    p.notes
+                    p.notes,
+                    p.no_cache
                 ],
             )?;
             Ok(p)

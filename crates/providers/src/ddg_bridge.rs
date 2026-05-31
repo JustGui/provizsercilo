@@ -12,13 +12,28 @@ use crate::{build_client, extract_domain, ProviderError, SearchProvider};
 
 pub struct DdgBridgeProvider {
     client: reqwest::Client,
+    backend: Option<String>,
+}
+
+impl DdgBridgeProvider {
+    pub fn new_fanout() -> Self {
+        Self {
+            client: build_client(20),
+            backend: None,
+        }
+    }
+
+    pub fn new_backend(backend: impl Into<String>) -> Self {
+        Self {
+            client: build_client(20),
+            backend: Some(backend.into()),
+        }
+    }
 }
 
 impl Default for DdgBridgeProvider {
     fn default() -> Self {
-        Self {
-            client: build_client(20),
-        }
+        Self::new_fanout()
     }
 }
 
@@ -37,10 +52,15 @@ struct BridgeResult {
 #[async_trait]
 impl SearchProvider for DdgBridgeProvider {
     fn slug(&self) -> &str {
-        "ddg"
+        match self.backend.as_deref() {
+            None => "ddg",
+            Some("duckduckgo") => "ddg-duckduckgo",
+            Some("yahoo") => "ddg-yahoo",
+            Some("brave") => "ddg-brave",
+            Some(other) => other,
+        }
     }
 
-    /// For this provider, api_key is the bridge base URL.
     fn requires_api_key(&self) -> bool {
         true // key_ref holds the bridge URL - resolution still required
     }
@@ -50,7 +70,7 @@ impl SearchProvider for DdgBridgeProvider {
         query: &str,
         n: usize,
         language: Option<&str>,
-        _country: Option<&str>,
+        country: Option<&str>,
         api_key: &str,
     ) -> Result<Vec<SearchResult>, ProviderError> {
         // api_key here is the bridge base URL.
@@ -62,6 +82,12 @@ impl SearchProvider for DdgBridgeProvider {
 
         if let Some(lang) = language {
             req = req.query(&[("language", lang)]);
+        }
+        if let Some(c) = country {
+            req = req.query(&[("country", c)]);
+        }
+        if let Some(backend) = &self.backend {
+            req = req.query(&[("backend", backend.as_str())]);
         }
 
         let resp = req.send().await?;
@@ -104,7 +130,7 @@ impl SearchProvider for DdgBridgeProvider {
             })
             .collect();
 
-        debug!(provider = "ddg", n = results.len(), "search complete");
+        debug!(provider = self.slug(), n = results.len(), "search complete");
         if results.is_empty() {
             return Err(ProviderError::Empty);
         }
