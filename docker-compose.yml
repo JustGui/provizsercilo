@@ -15,6 +15,9 @@ services:
       LOG_FORMAT: ${LOG_FORMAT:-json}
       CACHE_TTL_SECS: ${CACHE_TTL_SECS:-3600}
       MAX_FALLBACKS: ${MAX_FALLBACKS:-3}
+      # Set to a postgres:// URL to use PostgreSQL instead of SQLite
+      DATABASE_URL: ${DATABASE_URL:-}
+      DATABASE_PATH: ${DATABASE_PATH:-/data/proviz.db}
       # Provider keys - resolved by key_ref at search time
       BRAVE_KEY_1: ${BRAVE_KEY_1:-}
       TAVILY_KEY_1: ${TAVILY_KEY_1:-}
@@ -55,6 +58,7 @@ services:
     environment:
       PORT: "8001"
       SAFESEARCH: moderate
+      BACKEND_ORDER: ${BACKEND_ORDER:-yandex,mojeek,startpage,yahoo,google,duckduckgo,brave}
     restart: unless-stopped
 
 volumes:
