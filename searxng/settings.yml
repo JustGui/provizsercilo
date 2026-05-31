@@ -1,5 +1,13 @@
 use_default_settings: true
 
+general:
+  debug: false
+  donation_url: false
+  contact_url: false
+  privacypolicy_url: false
+  enable_metrics: false
+  default_doi_resolver: "oadoi.org"
+
 server:
   base_url: http://localhost:8080/
   secret_key: "be6a3e7957e148494eee4ce9c809e411011b7ad0aaa9e715be0e9a6b66255dea"
@@ -14,7 +22,6 @@ search:
 ui:
   static_use_hash: true
 
-# Disable bot detection — this is a private internal instance
 botdetection:
   ip_limit:
     enabled: false
@@ -23,8 +30,11 @@ botdetection:
 
 engines:
   - name: ahmia
+    engine: ahmia
     disabled: true
   - name: torch
+    engine: torch
     disabled: true
   - name: radio browser
+    engine: radio_browser
     disabled: true
