@@ -20,12 +20,14 @@ struct ProviderDef {
     key_prefix: &'static str,
 }
 
+// Priority convention: lower number = preferred (matches norm_inv scoring and group member p0/p1/…).
+// Free/keyless providers first, paid providers last.
 static PROVIDERS: &[(&str, ProviderDef)] = &[
     (
         "ddg",
         ProviderDef {
             name: "DuckDuckGo Bridge",
-            priority: 10,
+            priority: 1,
             key_prefix: "DDG_BRIDGE",
         },
     ),
@@ -33,7 +35,7 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
         "searxng",
         ProviderDef {
             name: "SearXNG",
-            priority: 8,
+            priority: 2,
             key_prefix: "SEARXNG_INSTANCE",
         },
     ),
@@ -41,7 +43,7 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
         "brave",
         ProviderDef {
             name: "Brave Search",
-            priority: 7,
+            priority: 3,
             key_prefix: "BRAVE_KEY",
         },
     ),
@@ -49,7 +51,7 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
         "tavily",
         ProviderDef {
             name: "Tavily",
-            priority: 6,
+            priority: 4,
             key_prefix: "TAVILY_KEY",
         },
     ),
@@ -65,7 +67,7 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
         "serper",
         ProviderDef {
             name: "Serper (Google)",
-            priority: 4,
+            priority: 6,
             key_prefix: "SERPER_KEY",
         },
     ),
@@ -108,8 +110,11 @@ pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
             continue; // No keys configured — skip entirely.
         }
 
-        // Ensure provider row exists.
+        // Ensure provider row exists; always sync priority in case it changed.
         let provider_id = if let Some(id) = existing.get(*slug) {
+            let _ = storage
+                .update_provider_fields(slug, Some(def.priority), None, None, None)
+                .await;
             id.clone()
         } else {
             let p = Provider {
