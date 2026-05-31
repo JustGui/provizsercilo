@@ -26,6 +26,14 @@ pub struct SearchParams {
     pub exclude_provider_slugs: Vec<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AttemptRecord {
+    pub provider: String,
+    pub success: bool,
+    pub error: Option<String>,
+    pub duration_ms: u64,
+}
+
 /// Result of a full search execution including fallback chain.
 pub struct ExecutionResult {
     pub results: Vec<SearchResult>,
@@ -35,6 +43,7 @@ pub struct ExecutionResult {
     pub fallback_chain: String,
     pub debug_decisions: Option<Vec<DebugDecision>>,
     pub log: SearchLog,
+    pub attempts: Vec<AttemptRecord>,
 }
 
 pub struct Executor {
@@ -95,13 +104,12 @@ impl Executor {
         let mut excluded: Vec<String> = Vec::new();
         let mut chain_parts: Vec<String> = Vec::new();
         let mut all_decisions: Vec<DebugDecision> = Vec::new();
-        let mut attempts = 0;
+        let mut attempt_records: Vec<AttemptRecord> = Vec::new();
 
         loop {
-            if attempts > params.max_fallbacks {
+            if attempt_records.len() > params.max_fallbacks {
                 break;
             }
-            attempts += 1;
 
             let selection = self.selector.select(&pool, &req, &excluded, params.debug);
             let Some((candidate, decisions)) = selection else {
@@ -113,11 +121,12 @@ impl Executor {
             }
 
             debug!(
-                attempt = attempts,
+                attempt = attempt_records.len() + 1,
                 provider = candidate.provider.slug,
                 key_ref = candidate.api_key.key_ref,
                 "trying candidate"
             );
+            let attempt_start = Instant::now();
             let result = self
                 .try_candidate(
                     &candidate,
@@ -133,6 +142,12 @@ impl Executor {
                 Ok(results) => {
                     let duration_ms = start.elapsed().as_millis() as u64;
                     chain_parts.push(format!("{}:{}", candidate.provider.slug, "ok"));
+                    attempt_records.push(AttemptRecord {
+                        provider: candidate.provider.slug.clone(),
+                        success: true,
+                        error: None,
+                        duration_ms: attempt_start.elapsed().as_millis() as u64,
+                    });
 
                     let storage = Arc::clone(self.catalog.storage());
                     let pid = candidate.provider.id.clone();
@@ -170,6 +185,7 @@ impl Executor {
                         fallback_chain: chain_parts.join(","),
                         debug_decisions: params.debug.then_some(all_decisions),
                         log,
+                        attempts: attempt_records,
                     });
                 }
                 Err(e) => {
@@ -208,6 +224,12 @@ impl Executor {
                     });
 
                     self.stats.record_search(&candidate.provider.slug, true, 0);
+                    attempt_records.push(AttemptRecord {
+                        provider: candidate.provider.slug.clone(),
+                        success: false,
+                        error: Some(error_type.to_string()),
+                        duration_ms: attempt_start.elapsed().as_millis() as u64,
+                    });
                     excluded.push(candidate.api_key.id.clone());
                 }
             }

@@ -10,7 +10,11 @@ use tracing::info;
 
 use proviz_core::{models::SearchResult, selector::DebugDecision};
 
-use crate::{app::AppState, error::AppError, executor::SearchParams};
+use crate::{
+    app::AppState,
+    error::AppError,
+    executor::{AttemptRecord, SearchParams},
+};
 
 #[derive(Deserialize)]
 pub struct SearchRequest {
@@ -40,6 +44,7 @@ pub struct SearchResponse {
     pub results: Vec<SearchResult>,
     pub meta: SearchMeta,
     pub debug: Option<Vec<DebugDecision>>,
+    pub attempts: Vec<AttemptRecord>,
 }
 
 #[derive(Serialize)]
@@ -93,6 +98,7 @@ pub async fn handle_search(
                     n_returned,
                 },
                 debug: None,
+                attempts: vec![],
             }));
         }
     }
@@ -164,5 +170,6 @@ pub async fn handle_search(
             n_returned,
         },
         debug: result.debug_decisions,
+        attempts: result.attempts,
     }))
 }
