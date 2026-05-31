@@ -8,6 +8,7 @@ Self-hosted Rust HTTP service that acts as a smart search-engine router. Callers
 - **Automatic fallback** - cascades through providers on errors, 429s, or empty results
 - **Rate-limit tracking** - sliding-window budgets (RPS / RPM / RPD) per API key, reactive cooldowns on error responses
 - **Language profiles** - `profiles.toml` routes queries to region-optimal providers
+- **Dual storage** - SQLite (default, zero-config) or PostgreSQL (set `DATABASE_URL`)
 - **In-memory cache** - configurable TTL via `CACHE_TTL_SECS`
 - **Key rotation** - multiple API keys per provider, round-robin with cooldown awareness
 - **Admin API** - manage providers and keys at runtime; reload catalog without restart
@@ -48,7 +49,8 @@ Brings up ProvizSercilo, SearXNG, and the DDG bridge together.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8090` | Listen port |
-| `DATABASE_PATH` | `./proviz.db` | SQLite database file |
+| `DATABASE_URL` | - | PostgreSQL URL (`postgres://user:pass@host/db`). When set, PostgreSQL is used and `DATABASE_PATH` is ignored. |
+| `DATABASE_PATH` | `./proviz.db` | SQLite database file (used when `DATABASE_URL` is not set) |
 | `PROFILES_PATH` | `./profiles.toml` | Language/country routing config |
 | `ADMIN_TOKEN` | - | Required to access `/admin/*` endpoints |
 | `SECRETS_DIR` | `/run/secrets` | Directory scanned first when resolving key refs |
@@ -56,6 +58,13 @@ Brings up ProvizSercilo, SearXNG, and the DDG bridge together.
 | `MAX_FALLBACKS` | `3` | Maximum provider fallback attempts per request |
 | `LOG_LEVEL` | `INFO` | `TRACE` \| `DEBUG` \| `INFO` \| `WARN` \| `ERROR` |
 | `LOG_FORMAT` | `json` | `json` \| `pretty` |
+
+### Storage backends
+
+ProvizSercilo supports two storage backends with the same schema and behaviour:
+
+- **SQLite** (default) — zero dependencies, ideal for single-node or development use. Configured via `DATABASE_PATH`.
+- **PostgreSQL** — set `DATABASE_URL=postgres://…` to connect to an existing PostgreSQL instance. The schema is created automatically on first start.
 
 API key values are **never stored in the database**. The `key_ref` column holds an env-var name (e.g. `BRAVE_KEY_1`); the actual value is resolved at search time from the environment or `SECRETS_DIR`.
 
@@ -93,8 +102,9 @@ All admin endpoints require `Authorization: Bearer <ADMIN_TOKEN>`.
 ```
 Cargo.toml                  workspace root
 crates/
-  core/                     models, rate_limit, selector, language_profile, key_resolver
-  storage-sqlite/           rusqlite storage layer
+  core/                     models, rate_limit, selector, language_profile, key_resolver, StorageBackend trait
+  storage-sqlite/           rusqlite storage layer (implements StorageBackend)
+  storage-postgres/         sqlx/PostgreSQL storage layer (implements StorageBackend)
   providers/                SearchProvider trait + adapters
   cache/                    in-memory DashMap query cache
 server/                     Axum HTTP server, main binary
