@@ -42,6 +42,8 @@ services:
       SEARXNG_BASE_URL: http://localhost:8080/
     volumes:
       - searxng-data:/etc/searxng
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - ./searxng/limiter.toml:/etc/searxng/limiter.toml:ro
     restart: unless-stopped
 
   # -----------------------------------------------------------------------

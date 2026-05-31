@@ -1,0 +1,28 @@
+server:
+  base_url: http://localhost:8080/
+  secret_key: "be6a3e7957e148494eee4ce9c809e411011b7ad0aaa9e715be0e9a6b66255dea"
+  limiter: false
+  image_proxy: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: ""
+
+ui:
+  static_use_hash: true
+
+# Disable bot detection — this is a private internal instance
+botdetection:
+  ip_limit:
+    enabled: false
+  ip_lists:
+    enabled: false
+
+engines:
+  - name: ahmia
+    disabled: true
+  - name: torch
+    disabled: true
+  - name: radio browser
+    disabled: true
