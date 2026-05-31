@@ -1,3 +1,5 @@
+use_default_settings: true
+
 server:
   base_url: http://localhost:8080/
   secret_key: "be6a3e7957e148494eee4ce9c809e411011b7ad0aaa9e715be0e9a6b66255dea"
