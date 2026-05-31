@@ -7,7 +7,7 @@ use proviz_core::{
     rate_limit::{ErrorType, RateLimitState, UsageTracker},
     selector::{DebugDecision, SelectRequest, Selector},
 };
-use tracing::warn;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::{catalog::CatalogStore, stats::StatsTracker};
@@ -78,10 +78,12 @@ impl Executor {
         drop(catalog);
 
         if pool.is_empty() {
+            debug!("no provider candidates in pool");
             return Err(crate::error::AppError::service_unavailable(
                 "No provider candidates available",
             ));
         }
+        debug!(pool_size = pool.len(), "candidate pool ready");
 
         let req = SelectRequest {
             language: params.language.clone(),
@@ -110,6 +112,12 @@ impl Executor {
                 all_decisions.extend(decisions);
             }
 
+            debug!(
+                attempt = attempts,
+                provider = candidate.provider.slug,
+                key_ref = candidate.api_key.key_ref,
+                "trying candidate"
+            );
             let result = self
                 .try_candidate(
                     &candidate,
@@ -166,6 +174,13 @@ impl Executor {
                 }
                 Err(e) => {
                     let error_type = e.error_type_str();
+                    debug!(
+                        provider = candidate.provider.slug,
+                        key_ref = candidate.api_key.key_ref,
+                        error_type,
+                        error = %e,
+                        "candidate failed, moving to next"
+                    );
                     chain_parts.push(format!("{}:{}", candidate.provider.slug, error_type));
 
                     let et = match error_type {
@@ -198,6 +213,10 @@ impl Executor {
             }
         }
 
+        debug!(
+            chain = chain_parts.join(","),
+            "all candidates exhausted, no result"
+        );
         Err(crate::error::AppError::service_unavailable(
             "All provider candidates exhausted",
         ))

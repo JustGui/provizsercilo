@@ -69,13 +69,16 @@ impl SearchProvider for BraveProvider {
         let status = resp.status().as_u16();
 
         if status == 429 {
+            debug!(provider = "brave", status, "rate-limited");
             return Err(ProviderError::RateLimit);
         }
         if status == 401 || status == 403 {
+            debug!(provider = "brave", status, "auth/blocked");
             return Err(ProviderError::Blocked);
         }
         if !resp.status().is_success() {
             let msg = resp.text().await.unwrap_or_default();
+            debug!(provider = "brave", status, body = %msg, "http error");
             return Err(ProviderError::Http {
                 status,
                 message: msg,
