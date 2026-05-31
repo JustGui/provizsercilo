@@ -13,6 +13,8 @@ server:
   secret_key: "be6a3e7957e148494eee4ce9c809e411011b7ad0aaa9e715be0e9a6b66255dea"
   limiter: false
   image_proxy: false
+  real_ip:
+    x_for: 0
 
 search:
   safe_search: 0
