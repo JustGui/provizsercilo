@@ -1,4 +1,9 @@
-use_default_settings: true
+use_default_settings:
+  engines:
+    remove:
+      - ahmia
+      - torch
+      - radio browser
 
 general:
   debug: false
@@ -30,10 +35,3 @@ botdetection:
   ip_lists:
     enabled: false
 
-engines:
-  - name: ahmia
-    engine: ahmia
-    disabled: true
-  - name: radio browser
-    engine: radio_browser
-    disabled: true
