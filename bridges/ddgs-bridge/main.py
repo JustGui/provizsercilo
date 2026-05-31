@@ -71,9 +71,14 @@ def search(
 
     if backend:
         kwargs["backend"] = backend
+    else:
+        # Fan-out across all backends, matching the old worker behaviour.
+        # Omitting backend in ddgs v9 defaults to DuckDuckGo only; the explicit
+        # comma-separated list restores the parallel fan-out we had before.
+        kwargs["backend"] = "brave,duckduckgo,yahoo"
 
     try:
-        raw = DDGS().text(q, **kwargs) or []
+        raw = DDGS(timeout=5).text(q, **kwargs) or []
     except Exception as exc:
         # Surface as 503 so ProvizSercilo triggers the normal error fallback.
         raise HTTPException(status_code=503, detail=str(exc))
