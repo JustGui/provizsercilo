@@ -25,3 +25,4 @@ bridges/ddgs-bridge/__pycache__/
 bridges/ddgs-bridge/.venv/
 bridges/ddgs-bridge/venv/
 bridges/ddgs-bridge/*.pyc
+.venv
