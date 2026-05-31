@@ -32,9 +32,6 @@ engines:
   - name: ahmia
     engine: ahmia
     disabled: true
-  - name: torch
-    engine: torch
-    disabled: true
   - name: radio browser
     engine: radio_browser
     disabled: true
