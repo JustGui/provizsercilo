@@ -302,6 +302,50 @@ pub struct AddMemberRequest {
     pub priority: Option<i64>,
 }
 
+pub async fn handle_upsert_group(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Json(req): Json<CreateGroupRequest>,
+) -> Result<Json<Group>, AppError> {
+    let group = Group {
+        id: Uuid::new_v4().to_string(),
+        slug,
+        name: req.name,
+        description: req.description,
+        is_active: true,
+        created_at: String::new(),
+    };
+    let upserted = state.storage.upsert_group(group).await?;
+    state.catalog.reload().await?;
+    Ok(Json(upserted))
+}
+
+pub async fn handle_delete_group(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    state.storage.delete_group(&slug).await?;
+    state.catalog.reload().await?;
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+pub async fn handle_clear_group_members(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let catalog = state.catalog.read().await;
+    let group = catalog
+        .groups
+        .iter()
+        .find(|g| g.slug == slug)
+        .ok_or_else(|| AppError::not_found(format!("Group '{slug}' not found")))?
+        .clone();
+    drop(catalog);
+    state.storage.clear_group_members(&group.id).await?;
+    state.catalog.reload().await?;
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
 pub async fn handle_add_group_member(
     State(state): State<AppState>,
     Path(slug): Path<String>,

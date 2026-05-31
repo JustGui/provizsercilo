@@ -426,6 +426,57 @@ impl StorageBackend for PgStorage {
         Ok(g)
     }
 
+    async fn upsert_group(&self, g: Group) -> Result<Group, StorageError> {
+        sqlx::query(
+            "INSERT INTO ps_groups (id, slug, name, description, is_active)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (slug) DO UPDATE
+               SET name = EXCLUDED.name,
+                   description = EXCLUDED.description,
+                   is_active = EXCLUDED.is_active",
+        )
+        .bind(&g.id)
+        .bind(&g.slug)
+        .bind(&g.name)
+        .bind(&g.description)
+        .bind(g.is_active)
+        .execute(&self.pool)
+        .await
+        .map_err(pg_err)?;
+        // Return the actual row (id may differ if slug already existed)
+        let row = sqlx::query(
+            "SELECT id, slug, name, description, is_active, created_at FROM ps_groups WHERE slug = $1",
+        )
+        .bind(&g.slug)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(pg_err)?;
+        Ok(Group {
+            id: row.try_get("id").map_err(row_err)?,
+            slug: row.try_get("slug").map_err(row_err)?,
+            name: row.try_get("name").map_err(row_err)?,
+            description: row.try_get("description").map_err(row_err)?,
+            is_active: row.try_get("is_active").map_err(row_err)?,
+            created_at: row.try_get("created_at").map_err(row_err)?,
+        })
+    }
+
+    async fn delete_group(&self, slug: &str) -> Result<(), StorageError> {
+        sqlx::query(
+            "DELETE FROM ps_group_members WHERE group_id = (SELECT id FROM ps_groups WHERE slug = $1)",
+        )
+        .bind(slug)
+        .execute(&self.pool)
+        .await
+        .map_err(pg_err)?;
+        sqlx::query("DELETE FROM ps_groups WHERE slug = $1")
+            .bind(slug)
+            .execute(&self.pool)
+            .await
+            .map_err(pg_err)?;
+        Ok(())
+    }
+
     async fn list_group_members(&self) -> Result<Vec<GroupMember>, StorageError> {
         let rows = sqlx::query(
             "SELECT id, group_id, api_key_id, priority, is_enabled FROM ps_group_members",
@@ -482,6 +533,15 @@ impl StorageBackend for PgStorage {
         sqlx::query("DELETE FROM ps_group_members WHERE group_id = $1 AND api_key_id = $2")
             .bind(group_id)
             .bind(api_key_id)
+            .execute(&self.pool)
+            .await
+            .map_err(pg_err)?;
+        Ok(())
+    }
+
+    async fn clear_group_members(&self, group_id: &str) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM ps_group_members WHERE group_id = $1")
+            .bind(group_id)
             .execute(&self.pool)
             .await
             .map_err(pg_err)?;

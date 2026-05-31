@@ -55,6 +55,8 @@ pub trait StorageBackend: Send + Sync {
     // --- Groups ---
     async fn list_groups(&self) -> Result<Vec<Group>, StorageError>;
     async fn create_group(&self, g: Group) -> Result<Group, StorageError>;
+    async fn upsert_group(&self, g: Group) -> Result<Group, StorageError>;
+    async fn delete_group(&self, slug: &str) -> Result<(), StorageError>;
     async fn list_group_members(&self) -> Result<Vec<GroupMember>, StorageError>;
     async fn add_group_member(
         &self,
@@ -67,6 +69,7 @@ pub trait StorageBackend: Send + Sync {
         group_id: &str,
         api_key_id: &str,
     ) -> Result<(), StorageError>;
+    async fn clear_group_members(&self, group_id: &str) -> Result<(), StorageError>;
 
     // --- Rate events ---
     async fn record_rate_event(

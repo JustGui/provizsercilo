@@ -488,6 +488,49 @@ impl StorageBackend for Storage {
         .await
     }
 
+    async fn upsert_group(&self, g: Group) -> Result<Group, StorageError> {
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO groups (id, slug, name, description, is_active)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(slug) DO UPDATE
+                   SET name = excluded.name,
+                       description = excluded.description,
+                       is_active = excluded.is_active",
+                params![g.id, g.slug, g.name, g.description, g.is_active],
+            )?;
+            let row: Group = conn.query_row(
+                "SELECT id, slug, name, description, is_active, created_at FROM groups WHERE slug = ?1",
+                params![g.slug],
+                |row| {
+                    Ok(Group {
+                        id: row.get(0)?,
+                        slug: row.get(1)?,
+                        name: row.get(2)?,
+                        description: row.get(3)?,
+                        is_active: row.get(4)?,
+                        created_at: row.get(5)?,
+                    })
+                },
+            )?;
+            Ok(row)
+        })
+        .await
+    }
+
+    async fn delete_group(&self, slug: &str) -> Result<(), StorageError> {
+        let s = slug.to_string();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "DELETE FROM group_members WHERE group_id = (SELECT id FROM groups WHERE slug = ?1)",
+                params![s],
+            )?;
+            conn.execute("DELETE FROM groups WHERE slug = ?1", params![s])?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn list_group_members(&self) -> Result<Vec<GroupMember>, StorageError> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
@@ -543,6 +586,18 @@ impl StorageBackend for Storage {
             conn.execute(
                 "DELETE FROM group_members WHERE group_id = ?1 AND api_key_id = ?2",
                 params![gid, kid],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn clear_group_members(&self, group_id: &str) -> Result<(), StorageError> {
+        let gid = group_id.to_string();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "DELETE FROM group_members WHERE group_id = ?1",
+                params![gid],
             )?;
             Ok(())
         })

@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     middleware,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use providers::SearchProvider;
@@ -147,9 +147,18 @@ fn build_admin_router(app_state: AppState) -> Router<AppState> {
         )
         .route("/groups", get(handlers::admin::handle_list_groups))
         .route("/groups", post(handlers::admin::handle_create_group))
+        .route("/groups/:slug", put(handlers::admin::handle_upsert_group))
+        .route(
+            "/groups/:slug",
+            delete(handlers::admin::handle_delete_group),
+        )
         .route(
             "/groups/:slug/members",
             post(handlers::admin::handle_add_group_member),
+        )
+        .route(
+            "/groups/:slug/members",
+            delete(handlers::admin::handle_clear_group_members),
         )
         .route(
             "/groups/:slug/members/:key_id",
