@@ -139,11 +139,17 @@ impl Executor {
                 .await;
 
             match result {
-                Ok(results) => {
+                Ok(output) => {
                     let duration_ms = start.elapsed().as_millis() as u64;
-                    chain_parts.push(format!("{}:{}", candidate.provider.slug, "ok"));
+                    // Use the effective slug (e.g. "ddg-yandex") when the provider
+                    // reports one; otherwise fall back to the DB slug.
+                    let provider_slug = output
+                        .effective_slug
+                        .clone()
+                        .unwrap_or_else(|| candidate.provider.slug.clone());
+                    chain_parts.push(format!("{provider_slug}:ok"));
                     attempt_records.push(AttemptRecord {
-                        provider: candidate.provider.slug.clone(),
+                        provider: provider_slug.clone(),
                         success: true,
                         error: None,
                         duration_ms: attempt_start.elapsed().as_millis() as u64,
@@ -156,8 +162,7 @@ impl Executor {
                         let _ = storage.update_avg_latency(&pid, lat).await;
                     });
 
-                    self.stats
-                        .record_search(&candidate.provider.slug, false, duration_ms);
+                    self.stats.record_search(&provider_slug, false, duration_ms);
 
                     let log = SearchLog {
                         id: Uuid::new_v4().to_string(),
@@ -165,10 +170,10 @@ impl Executor {
                         group_slug: params.group_slug.clone(),
                         language: params.language.clone(),
                         country: params.country.clone(),
-                        provider_slug: Some(candidate.provider.slug.clone()),
+                        provider_slug: Some(provider_slug.clone()),
                         api_key_id: Some(candidate.api_key.id.clone()),
                         n_requested: Some(params.n as i64),
-                        n_returned: Some(results.len() as i64),
+                        n_returned: Some(output.results.len() as i64),
                         duration_ms: Some(duration_ms as i64),
                         cache_hit: false,
                         success: Some(true),
@@ -178,8 +183,8 @@ impl Executor {
                     };
 
                     return Ok(ExecutionResult {
-                        results,
-                        provider_slug: candidate.provider.slug,
+                        results: output.results,
+                        provider_slug,
                         api_key_id: candidate.api_key.id,
                         duration_ms,
                         fallback_chain: chain_parts.join(","),
@@ -252,7 +257,7 @@ impl Executor {
         language: Option<&str>,
         country: Option<&str>,
         timeout_ms: u64,
-    ) -> Result<Vec<SearchResult>, ProviderError> {
+    ) -> Result<providers::SearchOutput, ProviderError> {
         let provider = self
             .providers
             .get(&candidate.provider.slug)

@@ -11,9 +11,11 @@ Usage:
     uvicorn main:app --host 0.0.0.0 --port 8001
 
 Optional env vars:
-    PORT          Listen port (default: 8001)
-    MAX_RESULTS   Default max results (default: 10)
-    SAFESEARCH    safe/moderate/off (default: moderate)
+    PORT           Listen port (default: 8001)
+    MAX_RESULTS    Default max results (default: 10)
+    SAFESEARCH     safe/moderate/off (default: moderate)
+    BACKEND_ORDER  Comma-separated backend priority when no backend is requested
+                   (default: yandex,mojeek,startpage,yahoo,google,duckduckgo,brave)
 """
 
 import os
@@ -21,9 +23,11 @@ from typing import Optional
 
 from ddgs import DDGS
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse
 
-app = FastAPI(title="DDG Bridge", version="0.1.0")
+_DEFAULT_BACKEND_ORDER = "yandex,mojeek,startpage,yahoo,google,duckduckgo,brave"
+
+app = FastAPI(title="DDG Bridge", version="0.2.0")
+
 
 def _ddg_region(language: Optional[str], country: Optional[str]) -> str:
     if not language:
@@ -47,13 +51,16 @@ def search(
     country: Optional[str] = Query(None, description="ISO 3166-1 alpha-2 country code"),
     region: Optional[str] = Query(None, description="DDG region code override (e.g. 'fr-fr')"),
     safesearch: str = Query(os.getenv("SAFESEARCH", "moderate")),
-    backend: Optional[str] = Query(None, description="DDGS backend: duckduckgo, yahoo, brave"),
+    backend: Optional[str] = Query(None, description="DDGS backend: duckduckgo, yahoo, brave, google, yandex, mojeek, startpage"),
 ):
     """
     Execute a DDG web search and return normalised results.
 
+    When `backend` is omitted, tries all backends sequentially in BACKEND_ORDER
+    until one returns results, and reports which one succeeded in `backend_used`.
+
     Returns:
-        { "results": [{ "url", "title", "snippet" }, ...] }
+        { "results": [...], "backend_used": "yandex" }
     """
     if not q.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
@@ -61,21 +68,34 @@ def search(
     kwargs: dict = {
         "max_results": n,
         "safesearch": safesearch,
+        "region": region if region else _ddg_region(language, country),
     }
 
-    # Caller-supplied region takes precedence; otherwise derive from language/country.
-    if region:
-        kwargs["region"] = region
-    else:
-        kwargs["region"] = _ddg_region(language, country)
-
     if backend:
-        kwargs["backend"] = backend
-
-    try:
-        raw = DDGS(timeout=5).text(q, **kwargs) or []
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        # Caller specified a backend — single attempt, no retry.
+        try:
+            raw = DDGS(timeout=8).text(q, **{**kwargs, "backend": backend}) or []
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        backend_used = backend
+    else:
+        # Fan-out: try backends sequentially in priority order.
+        order = os.getenv("BACKEND_ORDER", _DEFAULT_BACKEND_ORDER)
+        backends = [b.strip() for b in order.split(",") if b.strip()]
+        raw = []
+        backend_used = None
+        last_err = "No results found."
+        for b in backends:
+            try:
+                raw = DDGS(timeout=8).text(q, **{**kwargs, "backend": b}) or []
+                if raw:
+                    backend_used = b
+                    break
+            except Exception as exc:
+                last_err = str(exc)
+                raw = []
+        if not raw:
+            raise HTTPException(status_code=503, detail=last_err)
 
     results = [
         {
@@ -87,7 +107,7 @@ def search(
         if r.get("href") or r.get("url")
     ]
 
-    return {"results": results}
+    return {"results": results, "backend_used": backend_used}
 
 
 if __name__ == "__main__":

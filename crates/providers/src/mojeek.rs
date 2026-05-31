@@ -3,7 +3,7 @@ use proviz_core::models::SearchResult;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::{build_client, extract_domain, ProviderError, SearchProvider};
+use crate::{build_client, extract_domain, ProviderError, SearchOutput, SearchProvider};
 
 pub struct MojeekProvider {
     client: reqwest::Client,
@@ -46,7 +46,7 @@ impl SearchProvider for MojeekProvider {
         language: Option<&str>,
         country: Option<&str>,
         api_key: &str,
-    ) -> Result<Vec<SearchResult>, ProviderError> {
+    ) -> Result<SearchOutput, ProviderError> {
         let mut req = self.client.get("https://www.mojeek.com/search").query(&[
             ("q", query),
             ("api_key", api_key),
@@ -103,6 +103,6 @@ impl SearchProvider for MojeekProvider {
         if results.is_empty() {
             return Err(ProviderError::Empty);
         }
-        Ok(results)
+        Ok(SearchOutput::new(results))
     }
 }

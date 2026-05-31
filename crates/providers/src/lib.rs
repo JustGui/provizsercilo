@@ -9,6 +9,30 @@ use async_trait::async_trait;
 use proviz_core::models::SearchResult;
 use thiserror::Error;
 
+/// Output of a successful search. `effective_slug` is set by meta-providers
+/// (e.g. DDG bridge fan-out) to surface which sub-backend actually returned
+/// results — e.g. "ddg-yandex" — so the executor can use it in the fallback chain.
+pub struct SearchOutput {
+    pub results: Vec<SearchResult>,
+    pub effective_slug: Option<String>,
+}
+
+impl SearchOutput {
+    pub fn new(results: Vec<SearchResult>) -> Self {
+        Self {
+            results,
+            effective_slug: None,
+        }
+    }
+
+    pub fn with_slug(results: Vec<SearchResult>, slug: impl Into<String>) -> Self {
+        Self {
+            results,
+            effective_slug: Some(slug.into()),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ProviderError {
     #[error("Rate limited (429)")]
@@ -63,7 +87,7 @@ pub trait SearchProvider: Send + Sync {
         language: Option<&str>,
         country: Option<&str>,
         api_key: &str,
-    ) -> Result<Vec<SearchResult>, ProviderError>;
+    ) -> Result<SearchOutput, ProviderError>;
 }
 
 /// Extract the canonical domain from a URL string.

@@ -3,12 +3,16 @@
 /// The "api_key" for this provider is the bridge base URL (e.g. "http://localhost:8001").
 /// This follows the same key rotation model as other providers: each bridge instance
 /// is one entry in api_keys, with key_ref resolving to its URL.
+///
+/// In fan-out mode (no backend specified), the bridge tries all backends sequentially
+/// and returns `backend_used` in the response. The executor then sees e.g. "ddg-yandex"
+/// in the fallback chain instead of the generic "ddg".
 use async_trait::async_trait;
 use proviz_core::models::SearchResult;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::{build_client, extract_domain, ProviderError, SearchProvider};
+use crate::{build_client, extract_domain, ProviderError, SearchOutput, SearchProvider};
 
 pub struct DdgBridgeProvider {
     client: reqwest::Client,
@@ -40,6 +44,7 @@ impl Default for DdgBridgeProvider {
 #[derive(Deserialize)]
 struct BridgeResponse {
     results: Vec<BridgeResult>,
+    backend_used: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -54,15 +59,12 @@ impl SearchProvider for DdgBridgeProvider {
     fn slug(&self) -> &str {
         match self.backend.as_deref() {
             None => "ddg",
-            Some("duckduckgo") => "ddg-duckduckgo",
-            Some("yahoo") => "ddg-yahoo",
-            Some("brave") => "ddg-brave",
-            Some(other) => other,
+            Some(b) => b,
         }
     }
 
     fn requires_api_key(&self) -> bool {
-        true // key_ref holds the bridge URL - resolution still required
+        true // key_ref holds the bridge URL
     }
 
     async fn search(
@@ -72,8 +74,7 @@ impl SearchProvider for DdgBridgeProvider {
         language: Option<&str>,
         country: Option<&str>,
         api_key: &str,
-    ) -> Result<Vec<SearchResult>, ProviderError> {
-        // api_key here is the bridge base URL.
+    ) -> Result<SearchOutput, ProviderError> {
         let base = api_key.trim_end_matches('/');
         let mut req = self
             .client
@@ -130,10 +131,24 @@ impl SearchProvider for DdgBridgeProvider {
             })
             .collect();
 
-        debug!(provider = self.slug(), n = results.len(), "search complete");
         if results.is_empty() {
             return Err(ProviderError::Empty);
         }
-        Ok(results)
+
+        // In fan-out mode the bridge reports which backend actually returned results.
+        // Surface it as "ddg-<backend>" so the executor logs e.g. "ddg-yandex:ok".
+        let effective_slug = if self.backend.is_none() {
+            body.backend_used.map(|b| format!("ddg-{b}"))
+        } else {
+            None
+        };
+
+        let slug = effective_slug.as_deref().unwrap_or(self.slug());
+        debug!(provider = slug, n = results.len(), "search complete");
+
+        Ok(SearchOutput {
+            results,
+            effective_slug,
+        })
     }
 }

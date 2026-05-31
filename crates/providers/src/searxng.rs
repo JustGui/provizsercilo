@@ -9,7 +9,7 @@ use proviz_core::models::SearchResult;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::{build_client, extract_domain, ProviderError, SearchProvider};
+use crate::{build_client, extract_domain, ProviderError, SearchOutput, SearchProvider};
 
 pub struct SearxngProvider {
     client: reqwest::Client,
@@ -56,7 +56,7 @@ impl SearchProvider for SearxngProvider {
         language: Option<&str>,
         _country: Option<&str>,
         api_key: &str,
-    ) -> Result<Vec<SearchResult>, ProviderError> {
+    ) -> Result<SearchOutput, ProviderError> {
         let base = api_key.trim_end_matches('/');
         let mut req = self.client.get(format!("{base}/search")).query(&[
             ("q", query),
@@ -111,6 +111,6 @@ impl SearchProvider for SearxngProvider {
         if results.is_empty() {
             return Err(ProviderError::Empty);
         }
-        Ok(results)
+        Ok(SearchOutput::new(results))
     }
 }

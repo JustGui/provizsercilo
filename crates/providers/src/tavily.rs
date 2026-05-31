@@ -3,7 +3,7 @@ use proviz_core::models::SearchResult;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::{build_client, extract_domain, ProviderError, SearchProvider};
+use crate::{build_client, extract_domain, ProviderError, SearchOutput, SearchProvider};
 
 pub struct TavilyProvider {
     client: reqwest::Client,
@@ -52,7 +52,7 @@ impl SearchProvider for TavilyProvider {
         _language: Option<&str>,
         _country: Option<&str>,
         api_key: &str,
-    ) -> Result<Vec<SearchResult>, ProviderError> {
+    ) -> Result<SearchOutput, ProviderError> {
         let body = TavilyRequest {
             api_key,
             query,
@@ -106,6 +106,6 @@ impl SearchProvider for TavilyProvider {
         if results.is_empty() {
             return Err(ProviderError::Empty);
         }
-        Ok(results)
+        Ok(SearchOutput::new(results))
     }
 }

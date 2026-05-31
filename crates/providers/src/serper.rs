@@ -3,7 +3,7 @@ use proviz_core::models::SearchResult;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::{build_client, extract_domain, ProviderError, SearchProvider};
+use crate::{build_client, extract_domain, ProviderError, SearchOutput, SearchProvider};
 
 pub struct SerperProvider {
     client: reqwest::Client,
@@ -53,7 +53,7 @@ impl SearchProvider for SerperProvider {
         language: Option<&str>,
         country: Option<&str>,
         api_key: &str,
-    ) -> Result<Vec<SearchResult>, ProviderError> {
+    ) -> Result<SearchOutput, ProviderError> {
         let body = SerperRequest {
             q: query,
             num: n,
@@ -109,6 +109,6 @@ impl SearchProvider for SerperProvider {
         if results.is_empty() {
             return Err(ProviderError::Empty);
         }
-        Ok(results)
+        Ok(SearchOutput::new(results))
     }
 }
