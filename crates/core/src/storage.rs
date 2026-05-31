@@ -37,10 +37,7 @@ pub trait StorageBackend: Send + Sync {
 
     // --- API Keys ---
     async fn list_api_keys(&self) -> Result<Vec<ApiKey>, StorageError>;
-    async fn list_keys_for_provider(
-        &self,
-        provider_id: &str,
-    ) -> Result<Vec<ApiKey>, StorageError>;
+    async fn list_keys_for_provider(&self, provider_id: &str) -> Result<Vec<ApiKey>, StorageError>;
     async fn get_api_key(&self, id: &str) -> Result<ApiKey, StorageError>;
     async fn create_api_key(&self, key: ApiKey) -> Result<ApiKey, StorageError>;
     async fn update_api_key_fields(
@@ -80,10 +77,7 @@ pub trait StorageBackend: Send + Sync {
 
     // --- Search log ---
     async fn log_search(&self, log: SearchLog) -> Result<(), StorageError>;
-    async fn stats_window(
-        &self,
-        window_secs: i64,
-    ) -> Result<(i64, i64, i64), StorageError>;
+    async fn stats_window(&self, window_secs: i64) -> Result<(i64, i64, i64), StorageError>;
     async fn stats_by_provider(
         &self,
         window_secs: i64,

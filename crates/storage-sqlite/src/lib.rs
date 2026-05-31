@@ -62,20 +62,17 @@ pub struct Storage {
 
 impl Storage {
     pub fn open(path: &Path) -> Result<Self, StorageError> {
-        let conn = Connection::open(path)
-            .map_err(|e| StorageError::Backend(e.to_string()))?;
-        migrations::run_migrations(&conn)
-            .map_err(|e| StorageError::Backend(e.to_string()))?;
+        let conn = Connection::open(path).map_err(|e| StorageError::Backend(e.to_string()))?;
+        migrations::run_migrations(&conn).map_err(|e| StorageError::Backend(e.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
     }
 
     pub fn open_in_memory() -> Result<Self, StorageError> {
-        let conn = Connection::open_in_memory()
-            .map_err(|e| StorageError::Backend(e.to_string()))?;
-        migrations::run_migrations(&conn)
-            .map_err(|e| StorageError::Backend(e.to_string()))?;
+        let conn =
+            Connection::open_in_memory().map_err(|e| StorageError::Backend(e.to_string()))?;
+        migrations::run_migrations(&conn).map_err(|e| StorageError::Backend(e.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -154,7 +151,18 @@ impl StorageBackend for Storage {
             let raw: Vec<Row> = mapped.collect::<rusqlite::Result<_>>()?;
             raw.into_iter()
                 .map(
-                    |(id, slug, name, base_url, is_active, priority, avg_latency_ms, cs_json, notes, created_at)| {
+                    |(
+                        id,
+                        slug,
+                        name,
+                        base_url,
+                        is_active,
+                        priority,
+                        avg_latency_ms,
+                        cs_json,
+                        notes,
+                        created_at,
+                    )| {
                         let coverage_scores: HashMap<String, f64> = serde_json::from_str(&cs_json)?;
                         Ok(Provider {
                             id,
@@ -200,7 +208,18 @@ impl StorageBackend for Storage {
                     },
                 )
                 .map_err(|_| InternalError::NotFound(slug.clone()))?;
-            let (id, slug_out, name, base_url, is_active, priority, avg_latency_ms, cs_json, notes, created_at) = row;
+            let (
+                id,
+                slug_out,
+                name,
+                base_url,
+                is_active,
+                priority,
+                avg_latency_ms,
+                cs_json,
+                notes,
+                created_at,
+            ) = row;
             let coverage_scores: HashMap<String, f64> = serde_json::from_str(&cs_json)?;
             Ok(Provider {
                 id,
@@ -226,8 +245,15 @@ impl StorageBackend for Storage {
                  avg_latency_ms, coverage_scores, notes)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
-                    p.id, p.slug, p.name, p.base_url, p.is_active, p.priority,
-                    p.avg_latency_ms, cs_json, p.notes
+                    p.id,
+                    p.slug,
+                    p.name,
+                    p.base_url,
+                    p.is_active,
+                    p.priority,
+                    p.avg_latency_ms,
+                    cs_json,
+                    p.notes
                 ],
             )?;
             Ok(p)
@@ -310,10 +336,7 @@ impl StorageBackend for Storage {
         .await
     }
 
-    async fn list_keys_for_provider(
-        &self,
-        provider_id: &str,
-    ) -> Result<Vec<ApiKey>, StorageError> {
+    async fn list_keys_for_provider(&self, provider_id: &str) -> Result<Vec<ApiKey>, StorageError> {
         let pid = provider_id.to_string();
         self.with_conn(move |conn| {
             let mut stmt = conn.prepare(
@@ -346,8 +369,14 @@ impl StorageBackend for Storage {
                 "INSERT INTO api_keys (id, provider_id, label, key_ref, is_active, rps_limit,
                  rpm_limit, rpd_limit) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
-                    key.id, key.provider_id, key.label, key.key_ref, key.is_active,
-                    key.rps_limit, key.rpm_limit, key.rpd_limit
+                    key.id,
+                    key.provider_id,
+                    key.label,
+                    key.key_ref,
+                    key.is_active,
+                    key.rps_limit,
+                    key.rpm_limit,
+                    key.rpd_limit
                 ],
             )?;
             Ok(key)
@@ -367,19 +396,34 @@ impl StorageBackend for Storage {
         let id = id.to_string();
         self.with_conn(move |conn| {
             if let Some(v) = label {
-                conn.execute("UPDATE api_keys SET label = ?1 WHERE id = ?2", params![v, id])?;
+                conn.execute(
+                    "UPDATE api_keys SET label = ?1 WHERE id = ?2",
+                    params![v, id],
+                )?;
             }
             if let Some(v) = is_active {
-                conn.execute("UPDATE api_keys SET is_active = ?1 WHERE id = ?2", params![v, id])?;
+                conn.execute(
+                    "UPDATE api_keys SET is_active = ?1 WHERE id = ?2",
+                    params![v, id],
+                )?;
             }
             if let Some(v) = key_ref {
-                conn.execute("UPDATE api_keys SET key_ref = ?1 WHERE id = ?2", params![v, id])?;
+                conn.execute(
+                    "UPDATE api_keys SET key_ref = ?1 WHERE id = ?2",
+                    params![v, id],
+                )?;
             }
             if let Some(v) = rpm_limit {
-                conn.execute("UPDATE api_keys SET rpm_limit = ?1 WHERE id = ?2", params![v, id])?;
+                conn.execute(
+                    "UPDATE api_keys SET rpm_limit = ?1 WHERE id = ?2",
+                    params![v, id],
+                )?;
             }
             if let Some(v) = rpd_limit {
-                conn.execute("UPDATE api_keys SET rpd_limit = ?1 WHERE id = ?2", params![v, id])?;
+                conn.execute(
+                    "UPDATE api_keys SET rpd_limit = ?1 WHERE id = ?2",
+                    params![v, id],
+                )?;
             }
             Ok(())
         })
@@ -389,7 +433,10 @@ impl StorageBackend for Storage {
     async fn soft_delete_api_key(&self, id: &str) -> Result<(), StorageError> {
         let id = id.to_string();
         self.with_conn(move |conn| {
-            conn.execute("UPDATE api_keys SET is_active = 0 WHERE id = ?1", params![id])?;
+            conn.execute(
+                "UPDATE api_keys SET is_active = 0 WHERE id = ?1",
+                params![id],
+            )?;
             Ok(())
         })
         .await
@@ -413,9 +460,8 @@ impl StorageBackend for Storage {
 
     async fn list_groups(&self) -> Result<Vec<Group>, StorageError> {
         self.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, slug, name, description, is_active, created_at FROM groups",
-            )?;
+            let mut stmt = conn
+                .prepare("SELECT id, slug, name, description, is_active, created_at FROM groups")?;
             let mapped = stmt.query_map([], |row| {
                 Ok(Group {
                     id: row.get(0)?,
@@ -535,9 +581,20 @@ impl StorageBackend for Storage {
                  cache_hit, success, error_type, fallback_chain)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
                 params![
-                    log.id, log.query_hash, log.group_slug, log.language, log.country,
-                    log.provider_slug, log.api_key_id, log.n_requested, log.n_returned,
-                    log.duration_ms, log.cache_hit, log.success, log.error_type, log.fallback_chain
+                    log.id,
+                    log.query_hash,
+                    log.group_slug,
+                    log.language,
+                    log.country,
+                    log.provider_slug,
+                    log.api_key_id,
+                    log.n_requested,
+                    log.n_returned,
+                    log.duration_ms,
+                    log.cache_hit,
+                    log.success,
+                    log.error_type,
+                    log.fallback_chain
                 ],
             )?;
             Ok(())

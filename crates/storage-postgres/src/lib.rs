@@ -270,10 +270,7 @@ impl StorageBackend for PgStorage {
         rows.iter().map(read_api_key).collect()
     }
 
-    async fn list_keys_for_provider(
-        &self,
-        provider_id: &str,
-    ) -> Result<Vec<ApiKey>, StorageError> {
+    async fn list_keys_for_provider(&self, provider_id: &str) -> Result<Vec<ApiKey>, StorageError> {
         let rows = sqlx::query(
             "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
                     rpd_limit, last_used_at, created_at FROM ps_api_keys WHERE provider_id = $1",
@@ -328,23 +325,43 @@ impl StorageBackend for PgStorage {
     ) -> Result<(), StorageError> {
         if let Some(v) = label {
             sqlx::query("UPDATE ps_api_keys SET label = $1 WHERE id = $2")
-                .bind(&v).bind(id).execute(&self.pool).await.map_err(pg_err)?;
+                .bind(&v)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(pg_err)?;
         }
         if let Some(v) = is_active {
             sqlx::query("UPDATE ps_api_keys SET is_active = $1 WHERE id = $2")
-                .bind(v).bind(id).execute(&self.pool).await.map_err(pg_err)?;
+                .bind(v)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(pg_err)?;
         }
         if let Some(v) = key_ref {
             sqlx::query("UPDATE ps_api_keys SET key_ref = $1 WHERE id = $2")
-                .bind(&v).bind(id).execute(&self.pool).await.map_err(pg_err)?;
+                .bind(&v)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(pg_err)?;
         }
         if let Some(v) = rpm_limit {
             sqlx::query("UPDATE ps_api_keys SET rpm_limit = $1 WHERE id = $2")
-                .bind(v).bind(id).execute(&self.pool).await.map_err(pg_err)?;
+                .bind(v)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(pg_err)?;
         }
         if let Some(v) = rpd_limit {
             sqlx::query("UPDATE ps_api_keys SET rpd_limit = $1 WHERE id = $2")
-                .bind(v).bind(id).execute(&self.pool).await.map_err(pg_err)?;
+                .bind(v)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(pg_err)?;
         }
         Ok(())
     }
@@ -375,12 +392,11 @@ impl StorageBackend for PgStorage {
     // -----------------------------------------------------------------------
 
     async fn list_groups(&self) -> Result<Vec<Group>, StorageError> {
-        let rows = sqlx::query(
-            "SELECT id, slug, name, description, is_active, created_at FROM ps_groups",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(pg_err)?;
+        let rows =
+            sqlx::query("SELECT id, slug, name, description, is_active, created_at FROM ps_groups")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(pg_err)?;
         rows.iter()
             .map(|row| {
                 Ok(Group {
@@ -463,14 +479,12 @@ impl StorageBackend for PgStorage {
         group_id: &str,
         api_key_id: &str,
     ) -> Result<(), StorageError> {
-        sqlx::query(
-            "DELETE FROM ps_group_members WHERE group_id = $1 AND api_key_id = $2",
-        )
-        .bind(group_id)
-        .bind(api_key_id)
-        .execute(&self.pool)
-        .await
-        .map_err(pg_err)?;
+        sqlx::query("DELETE FROM ps_group_members WHERE group_id = $1 AND api_key_id = $2")
+            .bind(group_id)
+            .bind(api_key_id)
+            .execute(&self.pool)
+            .await
+            .map_err(pg_err)?;
         Ok(())
     }
 
@@ -483,15 +497,13 @@ impl StorageBackend for PgStorage {
         api_key_id: &str,
         event_type: &str,
     ) -> Result<(), StorageError> {
-        sqlx::query(
-            "INSERT INTO ps_rate_events (id, api_key_id, event_type) VALUES ($1, $2, $3)",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(api_key_id)
-        .bind(event_type)
-        .execute(&self.pool)
-        .await
-        .map_err(pg_err)?;
+        sqlx::query("INSERT INTO ps_rate_events (id, api_key_id, event_type) VALUES ($1, $2, $3)")
+            .bind(Uuid::new_v4().to_string())
+            .bind(api_key_id)
+            .bind(event_type)
+            .execute(&self.pool)
+            .await
+            .map_err(pg_err)?;
         Ok(())
     }
 

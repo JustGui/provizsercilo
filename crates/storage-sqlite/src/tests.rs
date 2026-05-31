@@ -63,7 +63,10 @@ async fn test_get_provider_by_slug() {
 async fn test_get_provider_not_found() {
     let storage = make_storage();
     let result = storage.get_provider_by_slug("nonexistent").await;
-    assert!(matches!(result, Err(proviz_core::storage::StorageError::NotFound(_))));
+    assert!(matches!(
+        result,
+        Err(proviz_core::storage::StorageError::NotFound(_))
+    ));
 }
 
 #[tokio::test]

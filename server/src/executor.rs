@@ -6,7 +6,6 @@ use proviz_core::{
     models::{Candidate, SearchLog, SearchResult},
     rate_limit::{ErrorType, RateLimitState, UsageTracker},
     selector::{DebugDecision, SelectRequest, Selector},
-
 };
 use tracing::{debug, warn};
 use uuid::Uuid;
