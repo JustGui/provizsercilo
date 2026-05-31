@@ -3,26 +3,56 @@ pub mod migrations;
 #[cfg(test)]
 mod tests;
 
+use async_trait::async_trait;
 use proviz_core::models::{ApiKey, Group, GroupMember, Provider, SearchLog};
+use proviz_core::storage::StorageBackend;
+// Re-export so callers using `storage_sqlite::StorageError` keep compiling.
+pub use proviz_core::storage::StorageError;
 use rusqlite::{params, Connection};
 use std::{
     collections::HashMap,
     path::Path,
     sync::{Arc, Mutex},
 };
-use thiserror::Error;
 use uuid::Uuid;
 
-#[derive(Debug, Error)]
-pub enum StorageError {
-    #[error("SQLite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("Task join error")]
-    Join,
-    #[error("Not found: {0}")]
+// Private error type for inside spawn_blocking closures.
+#[derive(Debug)]
+enum InternalError {
+    Sqlite(rusqlite::Error),
+    Json(serde_json::Error),
     NotFound(String),
+}
+
+impl std::fmt::Display for InternalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sqlite(e) => write!(f, "SQLite: {e}"),
+            Self::Json(e) => write!(f, "JSON: {e}"),
+            Self::NotFound(s) => write!(f, "Not found: {s}"),
+        }
+    }
+}
+
+impl From<rusqlite::Error> for InternalError {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Sqlite(e)
+    }
+}
+
+impl From<serde_json::Error> for InternalError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Json(e)
+    }
+}
+
+impl From<InternalError> for StorageError {
+    fn from(e: InternalError) -> Self {
+        match e {
+            InternalError::NotFound(s) => StorageError::NotFound(s),
+            other => StorageError::Backend(other.to_string()),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -32,16 +62,20 @@ pub struct Storage {
 
 impl Storage {
     pub fn open(path: &Path) -> Result<Self, StorageError> {
-        let conn = Connection::open(path)?;
-        migrations::run_migrations(&conn)?;
+        let conn = Connection::open(path)
+            .map_err(|e| StorageError::Backend(e.to_string()))?;
+        migrations::run_migrations(&conn)
+            .map_err(|e| StorageError::Backend(e.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
     }
 
     pub fn open_in_memory() -> Result<Self, StorageError> {
-        let conn = Connection::open_in_memory()?;
-        migrations::run_migrations(&conn)?;
+        let conn = Connection::open_in_memory()
+            .map_err(|e| StorageError::Backend(e.to_string()))?;
+        migrations::run_migrations(&conn)
+            .map_err(|e| StorageError::Backend(e.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -49,7 +83,7 @@ impl Storage {
 
     async fn with_conn<F, R>(&self, f: F) -> Result<R, StorageError>
     where
-        F: FnOnce(&Connection) -> Result<R, StorageError> + Send + 'static,
+        F: FnOnce(&Connection) -> Result<R, InternalError> + Send + 'static,
         R: Send + 'static,
     {
         let conn = Arc::clone(&self.conn);
@@ -59,15 +93,34 @@ impl Storage {
         })
         .await
         .map_err(|_| StorageError::Join)?
+        .map_err(StorageError::from)
     }
+}
 
-    // ---------------------------------------------------------------------------
+fn read_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
+    Ok(ApiKey {
+        id: row.get(0)?,
+        provider_id: row.get(1)?,
+        label: row.get(2)?,
+        key_ref: row.get(3)?,
+        is_active: row.get(4)?,
+        rps_limit: row.get(5)?,
+        rpm_limit: row.get(6)?,
+        rpd_limit: row.get(7)?,
+        last_used_at: row.get(8)?,
+        created_at: row.get(9)?,
+    })
+}
+
+#[async_trait]
+impl StorageBackend for Storage {
+    // -----------------------------------------------------------------------
     // Providers
-    // ---------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
-    pub async fn list_providers(&self) -> Result<Vec<Provider>, StorageError> {
+    async fn list_providers(&self) -> Result<Vec<Provider>, StorageError> {
         self.with_conn(|conn| {
-            type ProviderRow = (
+            type Row = (
                 String,
                 String,
                 String,
@@ -84,7 +137,6 @@ impl Storage {
                         coverage_scores, notes, created_at
                  FROM providers ORDER BY priority ASC",
             )?;
-            // Split query_map and collect into separate let bindings to avoid borrow-through-? issues.
             let mapped = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -99,21 +151,10 @@ impl Storage {
                     row.get::<_, String>(9)?,
                 ))
             })?;
-            let raw: Vec<ProviderRow> = mapped.collect::<rusqlite::Result<_>>()?;
+            let raw: Vec<Row> = mapped.collect::<rusqlite::Result<_>>()?;
             raw.into_iter()
                 .map(
-                    |(
-                        id,
-                        slug,
-                        name,
-                        base_url,
-                        is_active,
-                        priority,
-                        avg_latency_ms,
-                        cs_json,
-                        notes,
-                        created_at,
-                    )| {
+                    |(id, slug, name, base_url, is_active, priority, avg_latency_ms, cs_json, notes, created_at)| {
                         let coverage_scores: HashMap<String, f64> = serde_json::from_str(&cs_json)?;
                         Ok(Provider {
                             id,
@@ -134,7 +175,7 @@ impl Storage {
         .await
     }
 
-    pub async fn get_provider_by_slug(&self, slug: &str) -> Result<Provider, StorageError> {
+    async fn get_provider_by_slug(&self, slug: &str) -> Result<Provider, StorageError> {
         let slug = slug.to_string();
         self.with_conn(move |conn| {
             let row = conn
@@ -158,19 +199,8 @@ impl Storage {
                         ))
                     },
                 )
-                .map_err(|_| StorageError::NotFound(slug.clone()))?;
-            let (
-                id,
-                slug_out,
-                name,
-                base_url,
-                is_active,
-                priority,
-                avg_latency_ms,
-                cs_json,
-                notes,
-                created_at,
-            ) = row;
+                .map_err(|_| InternalError::NotFound(slug.clone()))?;
+            let (id, slug_out, name, base_url, is_active, priority, avg_latency_ms, cs_json, notes, created_at) = row;
             let coverage_scores: HashMap<String, f64> = serde_json::from_str(&cs_json)?;
             Ok(Provider {
                 id,
@@ -188,7 +218,7 @@ impl Storage {
         .await
     }
 
-    pub async fn create_provider(&self, p: Provider) -> Result<Provider, StorageError> {
+    async fn create_provider(&self, p: Provider) -> Result<Provider, StorageError> {
         self.with_conn(move |conn| {
             let cs_json = serde_json::to_string(&p.coverage_scores)?;
             conn.execute(
@@ -196,15 +226,8 @@ impl Storage {
                  avg_latency_ms, coverage_scores, notes)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
-                    p.id,
-                    p.slug,
-                    p.name,
-                    p.base_url,
-                    p.is_active,
-                    p.priority,
-                    p.avg_latency_ms,
-                    cs_json,
-                    p.notes
+                    p.id, p.slug, p.name, p.base_url, p.is_active, p.priority,
+                    p.avg_latency_ms, cs_json, p.notes
                 ],
             )?;
             Ok(p)
@@ -212,7 +235,7 @@ impl Storage {
         .await
     }
 
-    pub async fn update_provider_fields(
+    async fn update_provider_fields(
         &self,
         slug: &str,
         priority: Option<i64>,
@@ -252,7 +275,7 @@ impl Storage {
         .await
     }
 
-    pub async fn update_avg_latency(
+    async fn update_avg_latency(
         &self,
         provider_id: &str,
         latency_ms: i64,
@@ -271,39 +294,23 @@ impl Storage {
         .await
     }
 
-    // ---------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
     // API Keys
-    // ---------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
-    fn read_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
-        Ok(ApiKey {
-            id: row.get(0)?,
-            provider_id: row.get(1)?,
-            label: row.get(2)?,
-            key_ref: row.get(3)?,
-            is_active: row.get(4)?,
-            rps_limit: row.get(5)?,
-            rpm_limit: row.get(6)?,
-            rpd_limit: row.get(7)?,
-            last_used_at: row.get(8)?,
-            created_at: row.get(9)?,
-        })
-    }
-
-    pub async fn list_api_keys(&self) -> Result<Vec<ApiKey>, StorageError> {
+    async fn list_api_keys(&self) -> Result<Vec<ApiKey>, StorageError> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
                         rpd_limit, last_used_at, created_at FROM api_keys",
             )?;
-            let mapped = stmt.query_map([], Self::read_key)?;
-            let rows = mapped.collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
+            let mapped = stmt.query_map([], read_key)?;
+            Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await
     }
 
-    pub async fn list_keys_for_provider(
+    async fn list_keys_for_provider(
         &self,
         provider_id: &str,
     ) -> Result<Vec<ApiKey>, StorageError> {
@@ -313,41 +320,34 @@ impl Storage {
                 "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
                         rpd_limit, last_used_at, created_at FROM api_keys WHERE provider_id = ?1",
             )?;
-            let mapped = stmt.query_map(params![pid], Self::read_key)?;
-            let rows = mapped.collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
+            let mapped = stmt.query_map(params![pid], read_key)?;
+            Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await
     }
 
-    pub async fn get_api_key(&self, id: &str) -> Result<ApiKey, StorageError> {
+    async fn get_api_key(&self, id: &str) -> Result<ApiKey, StorageError> {
         let id = id.to_string();
         self.with_conn(move |conn| {
             conn.query_row(
                 "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
                         rpd_limit, last_used_at, created_at FROM api_keys WHERE id = ?1",
-                params![id],
-                Self::read_key,
+                params![id.clone()],
+                read_key,
             )
-            .map_err(|_| StorageError::NotFound(id))
+            .map_err(|_| InternalError::NotFound(id))
         })
         .await
     }
 
-    pub async fn create_api_key(&self, key: ApiKey) -> Result<ApiKey, StorageError> {
+    async fn create_api_key(&self, key: ApiKey) -> Result<ApiKey, StorageError> {
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO api_keys (id, provider_id, label, key_ref, is_active, rps_limit,
                  rpm_limit, rpd_limit) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
-                    key.id,
-                    key.provider_id,
-                    key.label,
-                    key.key_ref,
-                    key.is_active,
-                    key.rps_limit,
-                    key.rpm_limit,
-                    key.rpd_limit
+                    key.id, key.provider_id, key.label, key.key_ref, key.is_active,
+                    key.rps_limit, key.rpm_limit, key.rpd_limit
                 ],
             )?;
             Ok(key)
@@ -355,7 +355,7 @@ impl Storage {
         .await
     }
 
-    pub async fn update_api_key_fields(
+    async fn update_api_key_fields(
         &self,
         id: &str,
         label: Option<String>,
@@ -367,53 +367,35 @@ impl Storage {
         let id = id.to_string();
         self.with_conn(move |conn| {
             if let Some(v) = label {
-                conn.execute(
-                    "UPDATE api_keys SET label = ?1 WHERE id = ?2",
-                    params![v, id],
-                )?;
+                conn.execute("UPDATE api_keys SET label = ?1 WHERE id = ?2", params![v, id])?;
             }
             if let Some(v) = is_active {
-                conn.execute(
-                    "UPDATE api_keys SET is_active = ?1 WHERE id = ?2",
-                    params![v, id],
-                )?;
+                conn.execute("UPDATE api_keys SET is_active = ?1 WHERE id = ?2", params![v, id])?;
             }
             if let Some(v) = key_ref {
-                conn.execute(
-                    "UPDATE api_keys SET key_ref = ?1 WHERE id = ?2",
-                    params![v, id],
-                )?;
+                conn.execute("UPDATE api_keys SET key_ref = ?1 WHERE id = ?2", params![v, id])?;
             }
             if let Some(v) = rpm_limit {
-                conn.execute(
-                    "UPDATE api_keys SET rpm_limit = ?1 WHERE id = ?2",
-                    params![v, id],
-                )?;
+                conn.execute("UPDATE api_keys SET rpm_limit = ?1 WHERE id = ?2", params![v, id])?;
             }
             if let Some(v) = rpd_limit {
-                conn.execute(
-                    "UPDATE api_keys SET rpd_limit = ?1 WHERE id = ?2",
-                    params![v, id],
-                )?;
+                conn.execute("UPDATE api_keys SET rpd_limit = ?1 WHERE id = ?2", params![v, id])?;
             }
             Ok(())
         })
         .await
     }
 
-    pub async fn soft_delete_api_key(&self, id: &str) -> Result<(), StorageError> {
+    async fn soft_delete_api_key(&self, id: &str) -> Result<(), StorageError> {
         let id = id.to_string();
         self.with_conn(move |conn| {
-            conn.execute(
-                "UPDATE api_keys SET is_active = 0 WHERE id = ?1",
-                params![id],
-            )?;
+            conn.execute("UPDATE api_keys SET is_active = 0 WHERE id = ?1", params![id])?;
             Ok(())
         })
         .await
     }
 
-    pub async fn touch_api_key(&self, id: &str) -> Result<(), StorageError> {
+    async fn touch_api_key(&self, id: &str) -> Result<(), StorageError> {
         let id = id.to_string();
         self.with_conn(move |conn| {
             conn.execute(
@@ -425,14 +407,15 @@ impl Storage {
         .await
     }
 
-    // ---------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
     // Groups
-    // ---------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
-    pub async fn list_groups(&self) -> Result<Vec<Group>, StorageError> {
+    async fn list_groups(&self) -> Result<Vec<Group>, StorageError> {
         self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare("SELECT id, slug, name, description, is_active, created_at FROM groups")?;
+            let mut stmt = conn.prepare(
+                "SELECT id, slug, name, description, is_active, created_at FROM groups",
+            )?;
             let mapped = stmt.query_map([], |row| {
                 Ok(Group {
                     id: row.get(0)?,
@@ -443,13 +426,12 @@ impl Storage {
                     created_at: row.get(5)?,
                 })
             })?;
-            let rows = mapped.collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
+            Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await
     }
 
-    pub async fn create_group(&self, g: Group) -> Result<Group, StorageError> {
+    async fn create_group(&self, g: Group) -> Result<Group, StorageError> {
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO groups (id, slug, name, description, is_active) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -460,7 +442,7 @@ impl Storage {
         .await
     }
 
-    pub async fn list_group_members(&self) -> Result<Vec<GroupMember>, StorageError> {
+    async fn list_group_members(&self) -> Result<Vec<GroupMember>, StorageError> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, group_id, api_key_id, priority, is_enabled FROM group_members",
@@ -474,13 +456,12 @@ impl Storage {
                     is_enabled: row.get(4)?,
                 })
             })?;
-            let rows = mapped.collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
+            Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await
     }
 
-    pub async fn add_group_member(
+    async fn add_group_member(
         &self,
         group_id: &str,
         api_key_id: &str,
@@ -506,7 +487,7 @@ impl Storage {
         Ok(member)
     }
 
-    pub async fn remove_group_member(
+    async fn remove_group_member(
         &self,
         group_id: &str,
         api_key_id: &str,
@@ -522,11 +503,11 @@ impl Storage {
         .await
     }
 
-    // ---------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
     // Rate events
-    // ---------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
-    pub async fn record_rate_event(
+    async fn record_rate_event(
         &self,
         api_key_id: &str,
         event_type: &str,
@@ -542,11 +523,11 @@ impl Storage {
         .await
     }
 
-    // ---------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
     // Search log
-    // ---------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
-    pub async fn log_search(&self, log: SearchLog) -> Result<(), StorageError> {
+    async fn log_search(&self, log: SearchLog) -> Result<(), StorageError> {
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO search_log (id, query_hash, group_slug, language, country,
@@ -554,20 +535,9 @@ impl Storage {
                  cache_hit, success, error_type, fallback_chain)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
                 params![
-                    log.id,
-                    log.query_hash,
-                    log.group_slug,
-                    log.language,
-                    log.country,
-                    log.provider_slug,
-                    log.api_key_id,
-                    log.n_requested,
-                    log.n_returned,
-                    log.duration_ms,
-                    log.cache_hit,
-                    log.success,
-                    log.error_type,
-                    log.fallback_chain
+                    log.id, log.query_hash, log.group_slug, log.language, log.country,
+                    log.provider_slug, log.api_key_id, log.n_requested, log.n_returned,
+                    log.duration_ms, log.cache_hit, log.success, log.error_type, log.fallback_chain
                 ],
             )?;
             Ok(())
@@ -575,7 +545,7 @@ impl Storage {
         .await
     }
 
-    pub async fn stats_window(&self, window_secs: i64) -> Result<(i64, i64, i64), StorageError> {
+    async fn stats_window(&self, window_secs: i64) -> Result<(i64, i64, i64), StorageError> {
         self.with_conn(move |conn| {
             let row: (i64, i64, i64) = conn.query_row(
                 "SELECT COUNT(*),
@@ -590,7 +560,7 @@ impl Storage {
         .await
     }
 
-    pub async fn stats_by_provider(
+    async fn stats_by_provider(
         &self,
         window_secs: i64,
     ) -> Result<Vec<(String, i64, i64, Option<i64>)>, StorageError> {
@@ -606,8 +576,7 @@ impl Storage {
             let mapped = stmt.query_map(params![format!("-{window_secs} seconds")], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })?;
-            let rows = mapped.collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
+            Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await
     }

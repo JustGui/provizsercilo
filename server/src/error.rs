@@ -56,10 +56,10 @@ impl IntoResponse for AppError {
     }
 }
 
-impl From<storage_sqlite::StorageError> for AppError {
-    fn from(e: storage_sqlite::StorageError) -> Self {
+impl From<proviz_core::storage::StorageError> for AppError {
+    fn from(e: proviz_core::storage::StorageError) -> Self {
         match e {
-            storage_sqlite::StorageError::NotFound(msg) => Self::not_found(msg),
+            proviz_core::storage::StorageError::NotFound(msg) => Self::not_found(msg),
             other => Self::internal(other.to_string()),
         }
     }

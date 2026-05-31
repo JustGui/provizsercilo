@@ -1,17 +1,15 @@
 [package]
-name = "storage-sqlite"
+name = "storage-postgres"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 proviz-core = { path = "../core" }
-rusqlite = { workspace = true }
+sqlx = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
-tracing = { workspace = true }
 async-trait = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }

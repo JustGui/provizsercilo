@@ -10,7 +10,6 @@
 use std::collections::HashMap;
 
 use proviz_core::models::{ApiKey, Provider};
-use storage_sqlite::Storage;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -72,7 +71,7 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
     ),
 ];
 
-pub async fn seed_from_env(storage: &Storage) {
+pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
     // Build a map of existing slugs → provider id to avoid duplicate inserts.
     let existing: HashMap<String, String> = storage
         .list_providers()

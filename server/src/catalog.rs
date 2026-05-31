@@ -1,8 +1,9 @@
-use proviz_core::models::{ApiKey, Candidate, Group, GroupMember, Provider};
+use proviz_core::{
+    models::{ApiKey, Candidate, Group, GroupMember, Provider},
+    storage::{StorageBackend, StorageError},
+};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-use storage_sqlite::Storage;
 
 /// In-memory mirror of the provider/key/group catalog.
 /// Loaded at startup, refreshable via /admin/reload without restart.
@@ -65,11 +66,11 @@ impl Catalog {
 #[derive(Clone)]
 pub struct CatalogStore {
     inner: Arc<RwLock<Catalog>>,
-    storage: Arc<Storage>,
+    storage: Arc<dyn StorageBackend>,
 }
 
 impl CatalogStore {
-    pub async fn new(storage: Arc<Storage>) -> Result<Self, storage_sqlite::StorageError> {
+    pub async fn new(storage: Arc<dyn StorageBackend>) -> Result<Self, StorageError> {
         let store = Self {
             inner: Arc::new(RwLock::new(Catalog::default())),
             storage,
@@ -78,7 +79,7 @@ impl CatalogStore {
         Ok(store)
     }
 
-    pub async fn reload(&self) -> Result<(), storage_sqlite::StorageError> {
+    pub async fn reload(&self) -> Result<(), StorageError> {
         let (providers, api_keys, groups, group_members) = tokio::try_join!(
             self.storage.list_providers(),
             self.storage.list_api_keys(),
@@ -100,7 +101,7 @@ impl CatalogStore {
         self.inner.read().await
     }
 
-    pub fn storage(&self) -> &Arc<Storage> {
+    pub fn storage(&self) -> &Arc<dyn StorageBackend> {
         &self.storage
     }
 }

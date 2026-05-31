@@ -10,6 +10,7 @@ use proviz_core::{
     language_profile::ProfileMatcher,
     rate_limit::{RateLimitState, UsageTracker},
     selector::Selector,
+    storage::StorageBackend,
 };
 use tower_http::trace::TraceLayer;
 
@@ -21,7 +22,7 @@ use crate::{
 pub struct AppState {
     pub executor: Arc<Executor>,
     pub catalog: CatalogStore,
-    pub storage: Arc<storage_sqlite::Storage>,
+    pub storage: Arc<dyn StorageBackend>,
     pub cache: Arc<cache::QueryCache>,
     pub config: Arc<Config>,
     pub stats: Arc<StatsTracker>,
@@ -59,7 +60,14 @@ pub fn build_providers() -> HashMap<String, Arc<dyn SearchProvider>> {
 }
 
 pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
-    let storage = Arc::new(storage_sqlite::Storage::open(&config.database_path)?);
+    let storage: Arc<dyn StorageBackend> = if let Some(ref url) = config.database_url {
+        tracing::info!(url = %url, "connecting to PostgreSQL");
+        Arc::new(storage_postgres::PgStorage::connect(url).await?)
+    } else {
+        tracing::info!(path = %config.database_path.display(), "opening SQLite database");
+        Arc::new(storage_sqlite::Storage::open(&config.database_path)?)
+    };
+
     let catalog = CatalogStore::new(Arc::clone(&storage)).await?;
     let cache = Arc::new(cache::QueryCache::new());
     let stats = Arc::new(StatsTracker::new());

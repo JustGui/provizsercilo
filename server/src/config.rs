@@ -3,6 +3,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub port: u16,
+    /// PostgreSQL URL (postgres://…). When set, takes precedence over database_path.
+    pub database_url: Option<String>,
     pub database_path: PathBuf,
     pub profiles_path: PathBuf,
     pub secrets_dir: PathBuf,
@@ -25,6 +27,10 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(8090);
+
+        let database_url = std::env::var("DATABASE_URL")
+            .ok()
+            .filter(|u| u.starts_with("postgres"));
 
         let database_path = std::env::var("DATABASE_PATH")
             .map(PathBuf::from)
@@ -59,6 +65,7 @@ impl Config {
 
         Self {
             port,
+            database_url,
             database_path,
             profiles_path,
             secrets_dir,

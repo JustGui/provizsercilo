@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (router, state) = app::build_app(config.clone()).await?;
 
-    seed::seed_from_env(&state.storage).await;
+    seed::seed_from_env(state.storage.as_ref()).await;
     state.catalog.reload().await?;
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.port));

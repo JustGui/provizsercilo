@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 proviz-core = { path = "../crates/core" }
 storage-sqlite = { path = "../crates/storage-sqlite" }
+storage-postgres = { path = "../crates/storage-postgres" }
 providers = { path = "../crates/providers" }
 cache = { path = "../crates/cache" }
 

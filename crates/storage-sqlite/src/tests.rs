@@ -1,4 +1,7 @@
-use proviz_core::models::{ApiKey, Group, Provider};
+use proviz_core::{
+    models::{ApiKey, Group, Provider},
+    storage::StorageBackend as _,
+};
 use std::collections::HashMap;
 
 use crate::Storage;
@@ -60,7 +63,7 @@ async fn test_get_provider_by_slug() {
 async fn test_get_provider_not_found() {
     let storage = make_storage();
     let result = storage.get_provider_by_slug("nonexistent").await;
-    assert!(matches!(result, Err(crate::StorageError::NotFound(_))));
+    assert!(matches!(result, Err(proviz_core::storage::StorageError::NotFound(_))));
 }
 
 #[tokio::test]
