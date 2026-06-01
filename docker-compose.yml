@@ -45,6 +45,15 @@ services:
       SEARXNG_BASE_URL: http://localhost:8080/
     volumes:
       - searxng-data:/etc/searxng
+    depends_on:
+      - tor
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------------
+  # Tor - SOCKS5 proxy for SearXNG outgoing requests (avoids rate limits)
+  # -----------------------------------------------------------------------
+  tor:
+    image: dockage/tor:latest
     restart: unless-stopped
 
   # -----------------------------------------------------------------------
