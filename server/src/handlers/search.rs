@@ -87,12 +87,13 @@ pub async fn handle_search(
         );
         if let Some(entry) = state.cache.get(&key) {
             let n_returned = entry.results.len();
+            let cached_chain = format!("{}:cached", entry.provider_slug);
             return Ok(Json(SearchResponse {
                 results: entry.results,
                 meta: SearchMeta {
                     provider: entry.provider_slug,
                     api_key_id: entry.api_key_id,
-                    fallback_chain: String::new(),
+                    fallback_chain: cached_chain,
                     cache_hit: true,
                     duration_ms: 0,
                     n_returned,
