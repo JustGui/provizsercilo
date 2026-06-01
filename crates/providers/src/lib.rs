@@ -101,6 +101,16 @@ pub fn extract_domain(url_str: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Drop results with relative URLs or unresolvable domains.
+pub fn sanitize_results(results: Vec<SearchResult>) -> Vec<SearchResult> {
+    results
+        .into_iter()
+        .filter(|r| {
+            !r.domain.is_empty() && (r.url.starts_with("http://") || r.url.starts_with("https://"))
+        })
+        .collect()
+}
+
 /// Build a shared reqwest client with sensible defaults and rustls.
 pub fn build_client(timeout_secs: u64) -> reqwest::Client {
     reqwest::Client::builder()

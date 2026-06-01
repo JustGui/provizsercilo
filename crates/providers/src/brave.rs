@@ -3,7 +3,9 @@ use proviz_core::models::SearchResult;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::{build_client, extract_domain, ProviderError, SearchOutput, SearchProvider};
+use crate::{
+    build_client, extract_domain, sanitize_results, ProviderError, SearchOutput, SearchProvider,
+};
 
 pub struct BraveProvider {
     client: reqwest::Client,
@@ -106,6 +108,7 @@ impl SearchProvider for BraveProvider {
                 language: r.language,
             })
             .collect();
+        let results = sanitize_results(results);
 
         debug!(provider = "brave", n = results.len(), "search complete");
         if results.is_empty() {

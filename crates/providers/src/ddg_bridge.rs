@@ -119,8 +119,15 @@ impl SearchProvider for DdgBridgeProvider {
             .enumerate()
             .filter_map(|(i, r)| {
                 let url = r.url?;
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    return None;
+                }
+                let domain = extract_domain(&url);
+                if domain.is_empty() {
+                    return None;
+                }
                 Some(SearchResult {
-                    domain: extract_domain(&url),
+                    domain,
                     url,
                     title: r.title.unwrap_or_default(),
                     snippet: r.snippet.unwrap_or_default(),

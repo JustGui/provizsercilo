@@ -3,7 +3,9 @@ use proviz_core::models::SearchResult;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::{build_client, extract_domain, ProviderError, SearchOutput, SearchProvider};
+use crate::{
+    build_client, extract_domain, sanitize_results, ProviderError, SearchOutput, SearchProvider,
+};
 
 pub struct TavilyProvider {
     client: reqwest::Client,
@@ -101,6 +103,7 @@ impl SearchProvider for TavilyProvider {
                 language: None,
             })
             .collect();
+        let results = sanitize_results(results);
 
         debug!(provider = "tavily", n = results.len(), "search complete");
         if results.is_empty() {
