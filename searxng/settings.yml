@@ -32,6 +32,11 @@ search:
 ui:
   static_use_hash: true
 
+outgoing:
+  proxies:
+    all://:
+      - socks5://tor:9050
+
 botdetection:
   ip_limit:
     enabled: false
