@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # -----------------------------------------------------------------------
   # Main search router
@@ -53,7 +51,8 @@ services:
   # Tor - SOCKS5 proxy for SearXNG outgoing requests (avoids rate limits)
   # -----------------------------------------------------------------------
   tor:
-    image: dockage/tor:latest
+    image: dockurr/tor:latest
+    command: --SocksPort 0.0.0.0:9050
     restart: unless-stopped
 
   # -----------------------------------------------------------------------
