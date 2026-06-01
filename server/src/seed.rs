@@ -208,14 +208,14 @@ pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
         };
 
         // Add any key refs not already present for this provider.
-        for (key_ref, _) in &key_refs {
+        for (i, (key_ref, _)) in key_refs.iter().enumerate() {
             if existing_key_pairs.contains(&(provider_id.clone(), key_ref.clone())) {
                 continue;
             }
             let key = ApiKey {
                 id: Uuid::new_v4().to_string(),
                 provider_id: provider_id.clone(),
-                label: key_ref.to_lowercase().replace('_', "-"),
+                label: format!("{}-{}", slug, i + 1),
                 key_ref: key_ref.clone(),
                 is_active: true,
                 rps_limit: None,
