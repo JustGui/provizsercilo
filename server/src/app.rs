@@ -53,31 +53,27 @@ pub fn build_providers() -> HashMap<String, Arc<dyn SearchProvider>> {
         Arc::new(providers::serper::SerperProvider::default()),
     );
     map.insert(
-        "ddg".to_string(),
-        Arc::new(providers::ddg_bridge::DdgBridgeProvider::new_fanout()),
-    );
-    map.insert(
-        "ddg-duckduckgo".to_string(),
-        Arc::new(providers::ddg_bridge::DdgBridgeProvider::new_backend(
-            "duckduckgo",
-        )),
-    );
-    map.insert(
-        "ddg-yahoo".to_string(),
-        Arc::new(providers::ddg_bridge::DdgBridgeProvider::new_backend(
-            "yahoo",
-        )),
-    );
-    map.insert(
-        "ddg-brave".to_string(),
-        Arc::new(providers::ddg_bridge::DdgBridgeProvider::new_backend(
-            "brave",
-        )),
-    );
-    map.insert(
         "searxng".to_string(),
         Arc::new(providers::searxng::SearxngProvider::default()),
     );
+    // DDG bridge — one adapter per backend so each has its own cooldown in proviz-sercilo.
+    // The fan-out "ddg" adapter is intentionally removed; proviz owns the fallback logic.
+    for backend in &[
+        "yandex",
+        "mojeek",
+        "startpage",
+        "yahoo",
+        "google",
+        "duckduckgo",
+        "brave",
+    ] {
+        map.insert(
+            format!("ddg-{backend}"),
+            Arc::new(providers::ddg_bridge::DdgBridgeProvider::new_backend(
+                *backend,
+            )),
+        );
+    }
     map
 }
 

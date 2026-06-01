@@ -22,22 +22,35 @@ struct ProviderDef {
 }
 
 // Priority convention: lower number = preferred (matches norm_inv scoring and group member p0/p1/…).
-// Free/keyless providers first, paid providers last.
+// DDG individual backends are ordered to match the bridge's default BACKEND_ORDER:
+//   yandex, mojeek, startpage, yahoo, google, duckduckgo, brave
+// Note: the old "ddg" fan-out provider is intentionally absent — each backend is now its own
+// candidate so cooldowns are isolated. Deactivate any existing "ddg" row via the admin API:
+//   PATCH /admin/providers/ddg  { "is_active": false }
 static PROVIDERS: &[(&str, ProviderDef)] = &[
     (
-        "ddg",
+        "ddg-yandex",
         ProviderDef {
-            name: "DuckDuckGo Bridge",
+            name: "DDG Bridge (Yandex backend)",
             priority: 1,
             key_prefix: "DDG_BRIDGE",
             no_cache: true,
         },
     ),
     (
-        "ddg-duckduckgo",
+        "ddg-mojeek",
         ProviderDef {
-            name: "DDG Bridge (DuckDuckGo backend)",
+            name: "DDG Bridge (Mojeek backend)",
             priority: 2,
+            key_prefix: "DDG_BRIDGE",
+            no_cache: true,
+        },
+    ),
+    (
+        "ddg-startpage",
+        ProviderDef {
+            name: "DDG Bridge (Startpage backend)",
+            priority: 3,
             key_prefix: "DDG_BRIDGE",
             no_cache: true,
         },
@@ -46,7 +59,25 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
         "ddg-yahoo",
         ProviderDef {
             name: "DDG Bridge (Yahoo backend)",
-            priority: 3,
+            priority: 4,
+            key_prefix: "DDG_BRIDGE",
+            no_cache: true,
+        },
+    ),
+    (
+        "ddg-google",
+        ProviderDef {
+            name: "DDG Bridge (Google backend)",
+            priority: 5,
+            key_prefix: "DDG_BRIDGE",
+            no_cache: true,
+        },
+    ),
+    (
+        "ddg-duckduckgo",
+        ProviderDef {
+            name: "DDG Bridge (DuckDuckGo backend)",
+            priority: 6,
             key_prefix: "DDG_BRIDGE",
             no_cache: true,
         },
@@ -55,7 +86,7 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
         "ddg-brave",
         ProviderDef {
             name: "DDG Bridge (Brave backend)",
-            priority: 4,
+            priority: 7,
             key_prefix: "DDG_BRIDGE",
             no_cache: true,
         },
@@ -64,7 +95,7 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
         "searxng",
         ProviderDef {
             name: "SearXNG",
-            priority: 5,
+            priority: 8,
             key_prefix: "SEARXNG_INSTANCE",
             no_cache: false,
         },
@@ -73,7 +104,7 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
         "brave",
         ProviderDef {
             name: "Brave Search",
-            priority: 6,
+            priority: 9,
             key_prefix: "BRAVE_KEY",
             no_cache: false,
         },
@@ -82,7 +113,7 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
         "tavily",
         ProviderDef {
             name: "Tavily",
-            priority: 7,
+            priority: 10,
             key_prefix: "TAVILY_KEY",
             no_cache: false,
         },
@@ -91,7 +122,7 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
         "mojeek",
         ProviderDef {
             name: "Mojeek",
-            priority: 8,
+            priority: 11,
             key_prefix: "MOJEEK_KEY",
             no_cache: false,
         },
@@ -100,7 +131,7 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
         "serper",
         ProviderDef {
             name: "Serper (Google)",
-            priority: 9,
+            priority: 12,
             key_prefix: "SERPER_KEY",
             no_cache: false,
         },

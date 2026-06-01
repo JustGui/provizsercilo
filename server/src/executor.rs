@@ -94,6 +94,23 @@ impl Executor {
         }
         debug!(pool_size = pool.len(), "candidate pool ready");
 
+        // When using a group (member_priority is set), enforce strict tier ordering:
+        // all candidates in priority tier N are exhausted before tier N+1 is tried.
+        // Without a group, every candidate shares one implicit tier.
+        let tiers: Vec<Vec<Candidate>> = if pool.iter().any(|c| c.member_priority.is_some()) {
+            let mut by_priority: std::collections::BTreeMap<i64, Vec<Candidate>> =
+                Default::default();
+            for c in &pool {
+                by_priority
+                    .entry(c.effective_priority())
+                    .or_default()
+                    .push(c.clone());
+            }
+            by_priority.into_values().collect()
+        } else {
+            vec![pool]
+        };
+
         let req = SelectRequest {
             language: params.language.clone(),
             country: params.country.clone(),
@@ -105,15 +122,29 @@ impl Executor {
         let mut chain_parts: Vec<String> = Vec::new();
         let mut all_decisions: Vec<DebugDecision> = Vec::new();
         let mut attempt_records: Vec<AttemptRecord> = Vec::new();
+        let mut tier_idx: usize = 0;
 
         loop {
             if attempt_records.len() > params.max_fallbacks {
                 break;
             }
 
-            let selection = self.selector.select(&pool, &req, &excluded, params.debug);
-            let Some((candidate, decisions)) = selection else {
-                break;
+            let current_tier = &tiers[tier_idx];
+            let selection = self
+                .selector
+                .select(current_tier, &req, &excluded, params.debug);
+
+            // Current tier exhausted — advance to the next one (if any).
+            let (candidate, decisions) = match selection {
+                Some(pair) => pair,
+                None => {
+                    tier_idx += 1;
+                    if tier_idx >= tiers.len() {
+                        break;
+                    }
+                    debug!(tier = tier_idx, "advancing to next priority tier");
+                    continue;
+                }
             };
 
             if params.debug {
