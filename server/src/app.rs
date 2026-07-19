@@ -56,6 +56,14 @@ pub fn build_providers() -> HashMap<String, Arc<dyn SearchProvider>> {
         "searxng".to_string(),
         Arc::new(providers::searxng::SearxngProvider::default()),
     );
+    map.insert(
+        "exa".to_string(),
+        Arc::new(providers::exa::ExaProvider::default()),
+    );
+    map.insert(
+        "staan".to_string(),
+        Arc::new(providers::staan::StaanProvider::default()),
+    );
     // DDG bridge — one adapter per backend so each has its own cooldown in proviz-sercilo.
     // The fan-out "ddg" adapter is intentionally removed; proviz owns the fallback logic.
     for backend in &[

@@ -1,8 +1,10 @@
 pub mod brave;
 pub mod ddg_bridge;
+pub mod exa;
 pub mod mojeek;
 pub mod searxng;
 pub mod serper;
+pub mod staan;
 pub mod tavily;
 
 use async_trait::async_trait;
