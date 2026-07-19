@@ -11,6 +11,7 @@ use tracing::debug;
 
 use crate::{
     build_client, extract_domain, sanitize_results, ProviderError, SearchOutput, SearchProvider,
+    SearchQuery,
 };
 
 pub struct SearxngProvider {
@@ -51,14 +52,14 @@ impl SearchProvider for SearxngProvider {
         true // key_ref holds the instance URL
     }
 
-    async fn search(
-        &self,
-        query: &str,
-        n: usize,
-        language: Option<&str>,
-        _country: Option<&str>,
-        api_key: &str,
-    ) -> Result<SearchOutput, ProviderError> {
+    async fn search(&self, q: SearchQuery<'_>) -> Result<SearchOutput, ProviderError> {
+        let SearchQuery {
+            query,
+            n,
+            language,
+            api_key,
+            ..
+        } = q;
         let base = api_key.trim_end_matches('/');
         let mut req = self.client.get(format!("{base}/search")).query(&[
             ("q", query),
@@ -106,6 +107,8 @@ impl SearchProvider for SearxngProvider {
                 rank: i,
                 published_date: r.published_date,
                 language: r.language,
+                full_content: None,
+                extra_snippets: None,
             })
             .collect();
         let results = sanitize_results(results);

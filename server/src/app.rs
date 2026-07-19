@@ -27,6 +27,7 @@ pub struct AppState {
     pub catalog: CatalogStore,
     pub storage: Arc<dyn StorageBackend>,
     pub cache: Arc<cache::QueryCache>,
+    pub doc_cache: Arc<cache::DocCache>,
     pub config: Arc<Config>,
     pub stats: Arc<StatsTracker>,
     pub rate_limit: RateLimitState,
@@ -108,6 +109,7 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
     };
 
     let cache = Arc::new(cache::QueryCache::new());
+    let doc_cache = Arc::new(cache::DocCache::new());
     let stats = Arc::new(StatsTracker::new());
     let rate_limit = RateLimitState::default();
     let usage = UsageTracker::default();
@@ -140,6 +142,7 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
         catalog,
         storage,
         cache,
+        doc_cache,
         config: Arc::clone(&config),
         stats,
         rate_limit,

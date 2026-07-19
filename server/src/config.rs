@@ -12,6 +12,11 @@ pub struct Config {
     pub log_level: String,
     pub log_format: LogFormat,
     pub cache_ttl_secs: u64,
+    /// TTL for the URL-keyed doc cache (full_content/extra_snippets), separate
+    /// from the per-query SERP cache above - a page's content stays valid far
+    /// longer than a ranking, and it's reused across different queries that
+    /// happen to surface the same URL. Mirrors rtfc's own 6h URL-content cache.
+    pub doc_cache_ttl_secs: u64,
     pub max_fallbacks: usize,
 }
 
@@ -58,6 +63,11 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(3600);
 
+        let doc_cache_ttl_secs = std::env::var("DOC_CACHE_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(6 * 3600);
+
         let max_fallbacks = std::env::var("MAX_FALLBACKS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -73,6 +83,7 @@ impl Config {
             log_level,
             log_format,
             cache_ttl_secs,
+            doc_cache_ttl_secs,
             max_fallbacks,
         }
     }

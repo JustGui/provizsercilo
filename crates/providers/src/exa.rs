@@ -5,6 +5,7 @@ use tracing::debug;
 
 use crate::{
     build_client, extract_domain, sanitize_results, ProviderError, SearchOutput, SearchProvider,
+    SearchQuery,
 };
 
 pub struct ExaProvider {
@@ -54,25 +55,18 @@ impl SearchProvider for ExaProvider {
         "exa"
     }
 
-    async fn search(
-        &self,
-        query: &str,
-        n: usize,
-        _language: Option<&str>,
-        _country: Option<&str>,
-        api_key: &str,
-    ) -> Result<SearchOutput, ProviderError> {
+    async fn search(&self, q: SearchQuery<'_>) -> Result<SearchOutput, ProviderError> {
         let body = ExaRequest {
-            query,
+            query: q.query,
             search_type: "auto",
-            num_results: n,
+            num_results: q.n,
             contents: ExaContents { highlights: true },
         };
 
         let resp = self
             .client
             .post("https://api.exa.ai/search")
-            .header("x-api-key", api_key)
+            .header("x-api-key", q.api_key)
             .json(&body)
             .send()
             .await?;
@@ -112,6 +106,8 @@ impl SearchProvider for ExaProvider {
                 rank: i,
                 published_date: r.published_date,
                 language: None,
+                full_content: None,
+                extra_snippets: None,
             })
             .collect();
         let results = sanitize_results(results);

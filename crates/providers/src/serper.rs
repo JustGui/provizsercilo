@@ -5,6 +5,7 @@ use tracing::debug;
 
 use crate::{
     build_client, extract_domain, sanitize_results, ProviderError, SearchOutput, SearchProvider,
+    SearchQuery,
 };
 
 pub struct SerperProvider {
@@ -48,14 +49,15 @@ impl SearchProvider for SerperProvider {
         "serper"
     }
 
-    async fn search(
-        &self,
-        query: &str,
-        n: usize,
-        language: Option<&str>,
-        country: Option<&str>,
-        api_key: &str,
-    ) -> Result<SearchOutput, ProviderError> {
+    async fn search(&self, q: SearchQuery<'_>) -> Result<SearchOutput, ProviderError> {
+        let SearchQuery {
+            query,
+            n,
+            language,
+            country,
+            api_key,
+            ..
+        } = q;
         let body = SerperRequest {
             q: query,
             num: n,
@@ -104,6 +106,8 @@ impl SearchProvider for SerperProvider {
                 rank: i,
                 published_date: r.date,
                 language: None,
+                full_content: None,
+                extra_snippets: None,
             })
             .collect();
         let results = sanitize_results(results);

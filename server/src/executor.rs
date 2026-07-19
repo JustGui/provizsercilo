@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
-use providers::{ProviderError, SearchProvider};
+use providers::{ProviderError, SearchProvider, SearchQuery};
 use proviz_core::{
     key_resolver::{resolve_key, ResolveError},
     models::{Candidate, SearchLog, SearchResult},
@@ -24,6 +24,18 @@ pub struct SearchParams {
     pub debug: bool,
     pub exclude_key_ids: Vec<String>,
     pub exclude_provider_slugs: Vec<String>,
+    pub extra_snippets: bool,
+    pub full_content: Option<String>,
+    pub max_snippets: Option<usize>,
+    pub min_score: Option<f64>,
+    pub include_domains: Vec<String>,
+    pub exclude_domains: Vec<String>,
+}
+
+impl SearchParams {
+    fn wants_enrichment(&self) -> bool {
+        self.extra_snippets || self.full_content.is_some()
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -83,13 +95,31 @@ impl Executor {
     ) -> Result<ExecutionResult, crate::error::AppError> {
         let start = Instant::now();
         let catalog = self.catalog.read().await;
-        let pool = catalog.candidates(params.group_slug.as_deref());
+        let mut pool = catalog.candidates(params.group_slug.as_deref());
         drop(catalog);
+
+        // Enrichment requested → only keep candidates whose adapter can actually
+        // deliver every requested field. Otherwise a mid-chain fallback to a
+        // non-enrichment provider (e.g. Brave) would silently hand the caller
+        // bare results with no signal that full_content/extra_snippets never came.
+        if params.wants_enrichment() {
+            pool.retain(|c| {
+                let Some(provider) = self.providers.get(&c.provider.slug) else {
+                    return false;
+                };
+                (!params.extra_snippets || provider.supports_extra_snippets())
+                    && (params.full_content.is_none() || provider.supports_full_content())
+            });
+        }
 
         if pool.is_empty() {
             debug!("no provider candidates in pool");
             return Err(crate::error::AppError::service_unavailable(
-                "No provider candidates available",
+                if params.wants_enrichment() {
+                    "No enrichment-capable provider candidates available"
+                } else {
+                    "No provider candidates available"
+                },
             ));
         }
         debug!(pool_size = pool.len(), "candidate pool ready");
@@ -114,8 +144,8 @@ impl Executor {
         let req = SelectRequest {
             language: params.language.clone(),
             country: params.country.clone(),
-            exclude_key_ids: params.exclude_key_ids,
-            exclude_provider_slugs: params.exclude_provider_slugs,
+            exclude_key_ids: params.exclude_key_ids.clone(),
+            exclude_provider_slugs: params.exclude_provider_slugs.clone(),
         };
 
         let mut excluded: Vec<String> = Vec::new();
@@ -158,16 +188,7 @@ impl Executor {
                 "trying candidate"
             );
             let attempt_start = Instant::now();
-            let result = self
-                .try_candidate(
-                    &candidate,
-                    &params.query,
-                    params.n,
-                    params.language.as_deref(),
-                    params.country.as_deref(),
-                    params.timeout_ms,
-                )
-                .await;
+            let result = self.try_candidate(&candidate, &params).await;
 
             match result {
                 Ok(output) => {
@@ -283,11 +304,7 @@ impl Executor {
     async fn try_candidate(
         &self,
         candidate: &Candidate,
-        query: &str,
-        n: usize,
-        language: Option<&str>,
-        country: Option<&str>,
-        timeout_ms: u64,
+        params: &SearchParams,
     ) -> Result<providers::SearchOutput, ProviderError> {
         let provider = self
             .providers
@@ -310,9 +327,22 @@ impl Executor {
 
         self.usage.reserve(&candidate.api_key.id);
 
+        let query = SearchQuery {
+            query: &params.query,
+            n: params.n,
+            language: params.language.as_deref(),
+            country: params.country.as_deref(),
+            api_key: &api_key,
+            extra_snippets: params.extra_snippets,
+            full_content: params.full_content.as_deref(),
+            max_snippets: params.max_snippets,
+            min_score: params.min_score,
+            include_domains: &params.include_domains,
+            exclude_domains: &params.exclude_domains,
+        };
         let result = tokio::time::timeout(
-            std::time::Duration::from_millis(timeout_ms),
-            provider.search(query, n, language, country, &api_key),
+            std::time::Duration::from_millis(params.timeout_ms),
+            provider.search(query),
         )
         .await;
 

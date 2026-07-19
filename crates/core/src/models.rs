@@ -59,6 +59,28 @@ pub struct SearchResult {
     pub rank: usize,
     pub published_date: Option<String>,
     pub language: Option<String>,
+    /// Full page body, when `full_content` was requested and the provider supports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_content: Option<FullContent>,
+    /// Semantically scored passages, when `extra_snippets` was requested and the
+    /// provider supports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_snippets: Option<Vec<ExtraSnippet>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FullContent {
+    pub text: String,
+    /// What `text` actually is ("markdown" | "html" | "text") - the provider's
+    /// best-effort match to the requested format, stamped truthfully.
+    pub format: String,
+    pub length: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtraSnippet {
+    pub chunk: String,
+    pub score: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

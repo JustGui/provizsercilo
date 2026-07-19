@@ -70,6 +70,26 @@ impl ProviderError {
     }
 }
 
+/// Parameters for one search call. `api_key` is the resolved key value, or the
+/// service URL for URL-based providers (SearXNG, DDG bridge). The enrichment
+/// fields (`extra_snippets`, `full_content`, `max_snippets`, `min_score`,
+/// `include_domains`, `exclude_domains`) are hints - a provider that doesn't
+/// support one just ignores it; see `SearchProvider::supports_*`.
+pub struct SearchQuery<'a> {
+    pub query: &'a str,
+    pub n: usize,
+    pub language: Option<&'a str>,
+    pub country: Option<&'a str>,
+    pub api_key: &'a str,
+    pub extra_snippets: bool,
+    /// Requested body format hint: "markdown" | "html" | "text".
+    pub full_content: Option<&'a str>,
+    pub max_snippets: Option<usize>,
+    pub min_score: Option<f64>,
+    pub include_domains: &'a [String],
+    pub exclude_domains: &'a [String],
+}
+
 /// Common interface for all search engine adapters.
 #[async_trait]
 pub trait SearchProvider: Send + Sync {
@@ -81,15 +101,17 @@ pub trait SearchProvider: Send + Sync {
         true
     }
 
-    /// `api_key` is the resolved key value, or the service URL for URL-based providers (SearXNG, DDG bridge).
-    async fn search(
-        &self,
-        query: &str,
-        n: usize,
-        language: Option<&str>,
-        country: Option<&str>,
-        api_key: &str,
-    ) -> Result<SearchOutput, ProviderError>;
+    /// True if this provider can fill `SearchResult::full_content` on request.
+    fn supports_full_content(&self) -> bool {
+        false
+    }
+
+    /// True if this provider can fill `SearchResult::extra_snippets` on request.
+    fn supports_extra_snippets(&self) -> bool {
+        false
+    }
+
+    async fn search(&self, q: SearchQuery<'_>) -> Result<SearchOutput, ProviderError>;
 }
 
 /// Extract the canonical domain from a URL string.

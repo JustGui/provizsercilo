@@ -12,15 +12,18 @@ Self-hosted Rust HTTP service that acts as a smart search-engine router. Callers
 - **In-memory cache** - configurable TTL via `CACHE_TTL_SECS`
 - **Key rotation** - multiple API keys per provider, round-robin with cooldown awareness
 - **Admin API** - manage providers and keys at runtime; reload catalog without restart
+- **Content enrichment** - `extra_snippets` / `full_content` on `staan`/`tavily` fetch and rerank page content in the same call, no separate scrape step
 
 ## Providers
 
 | Slug | Type | Notes |
 |------|------|-------|
 | `brave` | API key | |
-| `tavily` | API key | |
+| `tavily` | API key | Supports `full_content` enrichment |
 | `mojeek` | API key | |
 | `serper` | API key | |
+| `exa` | API key | |
+| `staan` | API key | Supports `full_content` + `extra_snippets` enrichment |
 | `searxng` | URL | Self-hosted; supports multiple instances |
 | `ddg` | URL | Requires the included Python bridge |
 
@@ -55,6 +58,7 @@ Brings up ProvizSercilo, SearXNG, and the DDG bridge together.
 | `ADMIN_TOKEN` | - | Required to access `/admin/*` endpoints |
 | `SECRETS_DIR` | `/run/secrets` | Directory scanned first when resolving key refs |
 | `CACHE_TTL_SECS` | `3600` | Query cache TTL; `0` disables cache |
+| `DOC_CACHE_TTL_SECS` | `21600` (6h) | URL-keyed enrichment content cache TTL — separate from the query cache, reused across different queries that surface the same page |
 | `MAX_FALLBACKS` | `3` | Maximum provider fallback attempts per request |
 | `LOG_LEVEL` | `INFO` | `TRACE` \| `DEBUG` \| `INFO` \| `WARN` \| `ERROR` |
 | `LOG_FORMAT` | `json` | `json` \| `pretty` |
@@ -82,6 +86,24 @@ Content-Type: application/json
   "country": "us"         // optional ISO 3166-1 alpha-2
 }
 ```
+
+#### Content enrichment
+
+Optional fields — fetch and rerank result pages in the same call instead of scraping separately. Only providers that support the requested field are tried (see the Providers table); the request 503s if none in the group qualify.
+
+```json
+{
+  "query": "vector database comparison",
+  "extra_snippets": true,       // semantically scored chunks; staan only
+  "full_content": "markdown",   // "markdown" | "html" | "text"; staan + tavily
+  "max_snippets": 5,            // extra_snippets only, default 3
+  "min_score": 0.2,             // extra_snippets only, default 0.1
+  "include_domains": ["qdrant.tech", "weaviate.io"],
+  "exclude_domains": []
+}
+```
+
+Each result gains `full_content: {text, format, length}` and/or `extra_snippets: [{chunk, score}]` when populated. A page's enriched content is cached by URL (`DOC_CACHE_TTL_SECS`) independently of the query, so a different query surfacing the same page doesn't re-fetch it.
 
 ### Admin
 

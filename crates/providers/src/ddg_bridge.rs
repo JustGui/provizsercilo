@@ -12,7 +12,9 @@ use proviz_core::models::SearchResult;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::{build_client, extract_domain, ProviderError, SearchOutput, SearchProvider};
+use crate::{
+    build_client, extract_domain, ProviderError, SearchOutput, SearchProvider, SearchQuery,
+};
 
 pub struct DdgBridgeProvider {
     client: reqwest::Client,
@@ -67,14 +69,15 @@ impl SearchProvider for DdgBridgeProvider {
         true // key_ref holds the bridge URL
     }
 
-    async fn search(
-        &self,
-        query: &str,
-        n: usize,
-        language: Option<&str>,
-        country: Option<&str>,
-        api_key: &str,
-    ) -> Result<SearchOutput, ProviderError> {
+    async fn search(&self, q: SearchQuery<'_>) -> Result<SearchOutput, ProviderError> {
+        let SearchQuery {
+            query,
+            n,
+            language,
+            country,
+            api_key,
+            ..
+        } = q;
         let base = api_key.trim_end_matches('/');
         let mut req = self
             .client
@@ -134,6 +137,8 @@ impl SearchProvider for DdgBridgeProvider {
                     rank: i,
                     published_date: None,
                     language: None,
+                    full_content: None,
+                    extra_snippets: None,
                 })
             })
             .collect();

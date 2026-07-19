@@ -5,6 +5,7 @@ use tracing::debug;
 
 use crate::{
     build_client, extract_domain, sanitize_results, ProviderError, SearchOutput, SearchProvider,
+    SearchQuery,
 };
 
 pub struct MojeekProvider {
@@ -41,14 +42,15 @@ impl SearchProvider for MojeekProvider {
         "mojeek"
     }
 
-    async fn search(
-        &self,
-        query: &str,
-        n: usize,
-        language: Option<&str>,
-        country: Option<&str>,
-        api_key: &str,
-    ) -> Result<SearchOutput, ProviderError> {
+    async fn search(&self, q: SearchQuery<'_>) -> Result<SearchOutput, ProviderError> {
+        let SearchQuery {
+            query,
+            n,
+            language,
+            country,
+            api_key,
+            ..
+        } = q;
         let mut req = self.client.get("https://www.mojeek.com/search").query(&[
             ("q", query),
             ("api_key", api_key),
@@ -98,6 +100,8 @@ impl SearchProvider for MojeekProvider {
                 rank: i,
                 published_date: r.date,
                 language: r.language,
+                full_content: None,
+                extra_snippets: None,
             })
             .collect();
         let results = sanitize_results(results);
