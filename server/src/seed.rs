@@ -136,6 +136,24 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
             no_cache: false,
         },
     ),
+    (
+        "exa",
+        ProviderDef {
+            name: "Exa",
+            priority: 13,
+            key_prefix: "EXA_KEY",
+            no_cache: false,
+        },
+    ),
+    (
+        "staan",
+        ProviderDef {
+            name: "Staan",
+            priority: 14,
+            key_prefix: "STAAN_KEY",
+            no_cache: false,
+        },
+    ),
 ];
 
 pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
