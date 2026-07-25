@@ -39,6 +39,8 @@ fn make_key(id: &str, provider_id: &str, active: bool) -> ApiKey {
         rpd_limit: None,
         last_used_at: None,
         created_at: String::new(),
+        cost_per_mille: None,
+        currency: None,
     }
 }
 

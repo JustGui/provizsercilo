@@ -216,6 +216,11 @@ impl Executor {
 
                     self.stats.record_search(&provider_slug, false, duration_ms);
 
+                    // Snapshot the cost at the CPM in effect right now - a later CPM
+                    // edit must not retroactively change historical totals.
+                    let cost = candidate.api_key.cost_per_mille.map(|cpm| cpm / 1000.0);
+                    let currency = cost.and_then(|_| candidate.api_key.currency.clone());
+
                     let log = SearchLog {
                         id: Uuid::new_v4().to_string(),
                         query_hash: params.query_hash.clone(),
@@ -232,6 +237,8 @@ impl Executor {
                         error_type: None,
                         fallback_chain: Some(chain_parts.join(",")),
                         requested_at: String::new(),
+                        cost,
+                        currency,
                     };
 
                     return Ok(ExecutionResult {

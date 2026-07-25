@@ -38,6 +38,8 @@ fn make_key(provider_id: &str, label: &str) -> ApiKey {
         rpd_limit: Some(2000),
         last_used_at: None,
         created_at: String::new(),
+        cost_per_mille: None,
+        currency: None,
     }
 }
 

@@ -32,8 +32,12 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         rpm_limit BIGINT, \
         rpd_limit BIGINT, \
         last_used_at TEXT, \
-        created_at TEXT NOT NULL DEFAULT (to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))\
+        created_at TEXT NOT NULL DEFAULT (to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')), \
+        cost_per_mille DOUBLE PRECISION, \
+        currency TEXT\
     )",
+    "ALTER TABLE ps_api_keys ADD COLUMN IF NOT EXISTS cost_per_mille DOUBLE PRECISION",
+    "ALTER TABLE ps_api_keys ADD COLUMN IF NOT EXISTS currency TEXT",
     "CREATE TABLE IF NOT EXISTS ps_groups (\
         id TEXT PRIMARY KEY, \
         slug TEXT UNIQUE NOT NULL, \
@@ -71,8 +75,12 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         success BOOLEAN, \
         error_type TEXT, \
         fallback_chain TEXT, \
-        requested_at TEXT NOT NULL DEFAULT (to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))\
+        requested_at TEXT NOT NULL DEFAULT (to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')), \
+        cost DOUBLE PRECISION, \
+        currency TEXT\
     )",
+    "ALTER TABLE ps_search_log ADD COLUMN IF NOT EXISTS cost DOUBLE PRECISION",
+    "ALTER TABLE ps_search_log ADD COLUMN IF NOT EXISTS currency TEXT",
     "CREATE INDEX IF NOT EXISTS ps_idx_api_keys_provider ON ps_api_keys(provider_id)",
     "CREATE INDEX IF NOT EXISTS ps_idx_group_members_group ON ps_group_members(group_id)",
     "CREATE INDEX IF NOT EXISTS ps_idx_group_members_key ON ps_group_members(api_key_id)",
@@ -122,6 +130,8 @@ fn read_api_key(row: &PgRow) -> Result<ApiKey, StorageError> {
         rpd_limit: row.try_get("rpd_limit").map_err(row_err)?,
         last_used_at: row.try_get("last_used_at").map_err(row_err)?,
         created_at: row.try_get("created_at").map_err(row_err)?,
+        cost_per_mille: row.try_get("cost_per_mille").map_err(row_err)?,
+        currency: row.try_get("currency").map_err(row_err)?,
     })
 }
 
@@ -265,7 +275,7 @@ impl StorageBackend for PgStorage {
     async fn list_api_keys(&self) -> Result<Vec<ApiKey>, StorageError> {
         let rows = sqlx::query(
             "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                    rpd_limit, last_used_at, created_at FROM ps_api_keys",
+                    rpd_limit, last_used_at, created_at, cost_per_mille, currency FROM ps_api_keys",
         )
         .fetch_all(&self.pool)
         .await
@@ -276,7 +286,8 @@ impl StorageBackend for PgStorage {
     async fn list_keys_for_provider(&self, provider_id: &str) -> Result<Vec<ApiKey>, StorageError> {
         let rows = sqlx::query(
             "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                    rpd_limit, last_used_at, created_at FROM ps_api_keys WHERE provider_id = $1",
+                    rpd_limit, last_used_at, created_at, cost_per_mille, currency
+             FROM ps_api_keys WHERE provider_id = $1",
         )
         .bind(provider_id)
         .fetch_all(&self.pool)
@@ -288,7 +299,8 @@ impl StorageBackend for PgStorage {
     async fn get_api_key(&self, id: &str) -> Result<ApiKey, StorageError> {
         let row = sqlx::query(
             "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                    rpd_limit, last_used_at, created_at FROM ps_api_keys WHERE id = $1",
+                    rpd_limit, last_used_at, created_at, cost_per_mille, currency
+             FROM ps_api_keys WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -301,7 +313,8 @@ impl StorageBackend for PgStorage {
     async fn create_api_key(&self, key: ApiKey) -> Result<ApiKey, StorageError> {
         sqlx::query(
             "INSERT INTO ps_api_keys (id, provider_id, label, key_ref, is_active, rps_limit,
-             rpm_limit, rpd_limit) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+             rpm_limit, rpd_limit, cost_per_mille, currency)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(&key.id)
         .bind(&key.provider_id)
@@ -311,6 +324,8 @@ impl StorageBackend for PgStorage {
         .bind(key.rps_limit)
         .bind(key.rpm_limit)
         .bind(key.rpd_limit)
+        .bind(key.cost_per_mille)
+        .bind(&key.currency)
         .execute(&self.pool)
         .await
         .map_err(pg_err)?;
@@ -325,6 +340,8 @@ impl StorageBackend for PgStorage {
         key_ref: Option<String>,
         rpm_limit: Option<Option<i64>>,
         rpd_limit: Option<Option<i64>>,
+        cost_per_mille: Option<Option<f64>>,
+        currency: Option<Option<String>>,
     ) -> Result<(), StorageError> {
         if let Some(v) = label {
             sqlx::query("UPDATE ps_api_keys SET label = $1 WHERE id = $2")
@@ -360,6 +377,22 @@ impl StorageBackend for PgStorage {
         }
         if let Some(v) = rpd_limit {
             sqlx::query("UPDATE ps_api_keys SET rpd_limit = $1 WHERE id = $2")
+                .bind(v)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(pg_err)?;
+        }
+        if let Some(v) = cost_per_mille {
+            sqlx::query("UPDATE ps_api_keys SET cost_per_mille = $1 WHERE id = $2")
+                .bind(v)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(pg_err)?;
+        }
+        if let Some(v) = currency {
+            sqlx::query("UPDATE ps_api_keys SET currency = $1 WHERE id = $2")
                 .bind(v)
                 .bind(id)
                 .execute(&self.pool)
@@ -578,8 +611,8 @@ impl StorageBackend for PgStorage {
         sqlx::query(
             "INSERT INTO ps_search_log (id, query_hash, group_slug, language, country,
              provider_slug, api_key_id, n_requested, n_returned, duration_ms,
-             cache_hit, success, error_type, fallback_chain)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+             cache_hit, success, error_type, fallback_chain, cost, currency)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
         )
         .bind(&log.id)
         .bind(&log.query_hash)
@@ -595,6 +628,8 @@ impl StorageBackend for PgStorage {
         .bind(log.success)
         .bind(&log.error_type)
         .bind(&log.fallback_chain)
+        .bind(log.cost)
+        .bind(&log.currency)
         .execute(&self.pool)
         .await
         .map_err(pg_err)?;
@@ -633,6 +668,37 @@ impl StorageBackend for PgStorage {
              FROM ps_search_log
              WHERE requested_at >= $1 AND provider_slug IS NOT NULL
              GROUP BY provider_slug",
+        )
+        .bind(&cutoff)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(pg_err)?;
+
+        rows.iter()
+            .map(|row| {
+                Ok((
+                    row.try_get(0).map_err(row_err)?,
+                    row.try_get(1).map_err(row_err)?,
+                    row.try_get(2).map_err(row_err)?,
+                    row.try_get(3).map_err(row_err)?,
+                ))
+            })
+            .collect()
+    }
+
+    async fn cost_by_provider(
+        &self,
+        window_secs: i64,
+    ) -> Result<Vec<(String, String, f64, i64)>, StorageError> {
+        let cutoff = format_cutoff(window_secs);
+        let rows = sqlx::query(
+            "SELECT provider_slug, currency, SUM(cost)::DOUBLE PRECISION, COUNT(*)::BIGINT
+             FROM ps_search_log
+             WHERE requested_at >= $1
+               AND provider_slug IS NOT NULL
+               AND cost IS NOT NULL
+               AND currency IS NOT NULL
+             GROUP BY provider_slug, currency",
         )
         .bind(&cutoff)
         .fetch_all(&self.pool)

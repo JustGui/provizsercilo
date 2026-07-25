@@ -12,6 +12,7 @@ Self-hosted Rust HTTP service that acts as a smart search-engine router. Callers
 - **In-memory cache** - configurable TTL via `CACHE_TTL_SECS`
 - **Key rotation** - multiple API keys per provider, round-robin with cooldown awareness
 - **Admin API** - manage providers and keys at runtime; reload catalog without restart
+- **Cost tracking** - per-key CPM (cost per 1000 requests) + currency; query aggregate spend by provider/currency
 - **Content enrichment** - `extra_snippets` / `full_content` on `staan`/`tavily` fetch and rerank page content in the same call, no separate scrape step
 
 ## Providers
@@ -116,8 +117,41 @@ All admin endpoints require `Authorization: Bearer <ADMIN_TOKEN>`.
 | `GET` | `/admin/providers/:slug/keys` | List key refs for a provider |
 | `POST` | `/admin/providers/:slug/keys` | Add a key ref |
 | `DELETE` | `/admin/providers/:slug/keys/:id` | Remove a key |
+| `PATCH` | `/admin/keys/:id` | Update a key (limits, active state, cost) |
 | `POST` | `/admin/reload` | Reload in-memory catalog from DB |
 | `GET` | `/admin/stats` | Rate-limit and usage snapshot |
+| `GET` | `/admin/costs?window_secs=` | Spend by provider/currency over the window (default 30d) |
+
+#### Cost tracking
+
+Each API key can carry a subscription cost, so a provider with two keys on two different plans (or billed in different currencies) is tracked separately.
+
+Set it when creating or updating a key:
+
+```bash
+curl -X PATCH localhost:8090/admin/keys/<id> \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"cost_per_mille": 4.0, "currency": "USD"}'
+```
+
+`cost_per_mille` = cost per 1000 requests, in `currency` (ISO 4217, e.g. `"USD"`, `"EUR"`). Every successful search snapshots `cost = cost_per_mille / 1000` onto its `search_log` row at request time, so later CPM edits never retroactively change historical totals. Cache hits cost nothing (no upstream call made).
+
+Read it back:
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "localhost:8090/admin/costs?window_secs=2592000"
+```
+
+```json
+[
+  {"provider": "tavily", "currency": "USD", "total_cost": 12.4, "requests": 3100},
+  {"provider": "staan",  "currency": "EUR", "total_cost": 3.2,  "requests": 800}
+]
+```
+
+Rows are grouped by `(provider, currency)` — spend in different currencies is never summed together.
 
 ## Workspace layout
 

@@ -29,6 +29,10 @@ pub struct ApiKey {
     pub rpd_limit: Option<i64>,
     pub last_used_at: Option<String>,
     pub created_at: String,
+    /// Subscription cost per 1000 requests, in `currency`. `None` = cost unknown/free.
+    pub cost_per_mille: Option<f64>,
+    /// ISO 4217 currency code (e.g. "USD", "EUR") for `cost_per_mille`.
+    pub currency: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +112,10 @@ pub struct SearchLog {
     pub error_type: Option<String>,
     pub fallback_chain: Option<String>,
     pub requested_at: String,
+    /// Cost snapshot at request time (`api_key.cost_per_mille / 1000`), so later
+    /// CPM changes don't retroactively distort historical totals.
+    pub cost: Option<f64>,
+    pub currency: Option<String>,
 }
 
 /// A (provider, api_key) pair with optional group membership context.

@@ -106,6 +106,8 @@ fn read_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
         rpd_limit: row.get(7)?,
         last_used_at: row.get(8)?,
         created_at: row.get(9)?,
+        cost_per_mille: row.get(10)?,
+        currency: row.get(11)?,
     })
 }
 
@@ -336,7 +338,7 @@ impl StorageBackend for Storage {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                        rpd_limit, last_used_at, created_at FROM api_keys",
+                        rpd_limit, last_used_at, created_at, cost_per_mille, currency FROM api_keys",
             )?;
             let mapped = stmt.query_map([], read_key)?;
             Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -349,7 +351,8 @@ impl StorageBackend for Storage {
         self.with_conn(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                        rpd_limit, last_used_at, created_at FROM api_keys WHERE provider_id = ?1",
+                        rpd_limit, last_used_at, created_at, cost_per_mille, currency
+                 FROM api_keys WHERE provider_id = ?1",
             )?;
             let mapped = stmt.query_map(params![pid], read_key)?;
             Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -362,7 +365,8 @@ impl StorageBackend for Storage {
         self.with_conn(move |conn| {
             conn.query_row(
                 "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                        rpd_limit, last_used_at, created_at FROM api_keys WHERE id = ?1",
+                        rpd_limit, last_used_at, created_at, cost_per_mille, currency
+                 FROM api_keys WHERE id = ?1",
                 params![id.clone()],
                 read_key,
             )
@@ -375,7 +379,8 @@ impl StorageBackend for Storage {
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO api_keys (id, provider_id, label, key_ref, is_active, rps_limit,
-                 rpm_limit, rpd_limit) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 rpm_limit, rpd_limit, cost_per_mille, currency)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     key.id,
                     key.provider_id,
@@ -384,7 +389,9 @@ impl StorageBackend for Storage {
                     key.is_active,
                     key.rps_limit,
                     key.rpm_limit,
-                    key.rpd_limit
+                    key.rpd_limit,
+                    key.cost_per_mille,
+                    key.currency
                 ],
             )?;
             Ok(key)
@@ -400,6 +407,8 @@ impl StorageBackend for Storage {
         key_ref: Option<String>,
         rpm_limit: Option<Option<i64>>,
         rpd_limit: Option<Option<i64>>,
+        cost_per_mille: Option<Option<f64>>,
+        currency: Option<Option<String>>,
     ) -> Result<(), StorageError> {
         let id = id.to_string();
         self.with_conn(move |conn| {
@@ -430,6 +439,18 @@ impl StorageBackend for Storage {
             if let Some(v) = rpd_limit {
                 conn.execute(
                     "UPDATE api_keys SET rpd_limit = ?1 WHERE id = ?2",
+                    params![v, id],
+                )?;
+            }
+            if let Some(v) = cost_per_mille {
+                conn.execute(
+                    "UPDATE api_keys SET cost_per_mille = ?1 WHERE id = ?2",
+                    params![v, id],
+                )?;
+            }
+            if let Some(v) = currency {
+                conn.execute(
+                    "UPDATE api_keys SET currency = ?1 WHERE id = ?2",
                     params![v, id],
                 )?;
             }
@@ -641,8 +662,8 @@ impl StorageBackend for Storage {
             conn.execute(
                 "INSERT INTO search_log (id, query_hash, group_slug, language, country,
                  provider_slug, api_key_id, n_requested, n_returned, duration_ms,
-                 cache_hit, success, error_type, fallback_chain)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                 cache_hit, success, error_type, fallback_chain, cost, currency)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
                 params![
                     log.id,
                     log.query_hash,
@@ -657,7 +678,9 @@ impl StorageBackend for Storage {
                     log.cache_hit,
                     log.success,
                     log.error_type,
-                    log.fallback_chain
+                    log.fallback_chain,
+                    log.cost,
+                    log.currency
                 ],
             )?;
             Ok(())
@@ -692,6 +715,28 @@ impl StorageBackend for Storage {
                  FROM search_log
                  WHERE requested_at >= datetime('now', ?1) AND provider_slug IS NOT NULL
                  GROUP BY provider_slug",
+            )?;
+            let mapped = stmt.query_map(params![format!("-{window_secs} seconds")], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+            Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await
+    }
+
+    async fn cost_by_provider(
+        &self,
+        window_secs: i64,
+    ) -> Result<Vec<(String, String, f64, i64)>, StorageError> {
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT provider_slug, currency, SUM(cost), COUNT(*)
+                 FROM search_log
+                 WHERE requested_at >= datetime('now', ?1)
+                   AND provider_slug IS NOT NULL
+                   AND cost IS NOT NULL
+                   AND currency IS NOT NULL
+                 GROUP BY provider_slug, currency",
             )?;
             let mapped = stmt.query_map(params![format!("-{window_secs} seconds")], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))

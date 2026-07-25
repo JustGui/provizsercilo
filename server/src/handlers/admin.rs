@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{Path, Request, State},
+    extract::{Path, Query, Request, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::Response,
@@ -140,6 +140,8 @@ pub struct ApiKeyPublic {
     pub rpd_limit: Option<i64>,
     pub last_used_at: Option<String>,
     pub created_at: String,
+    pub cost_per_mille: Option<f64>,
+    pub currency: Option<String>,
 }
 
 impl From<ApiKey> for ApiKeyPublic {
@@ -155,6 +157,8 @@ impl From<ApiKey> for ApiKeyPublic {
             rpd_limit: k.rpd_limit,
             last_used_at: k.last_used_at,
             created_at: k.created_at,
+            cost_per_mille: k.cost_per_mille,
+            currency: k.currency,
         }
     }
 }
@@ -175,6 +179,10 @@ pub struct CreateKeyRequest {
     pub rps_limit: Option<f64>,
     pub rpm_limit: Option<i64>,
     pub rpd_limit: Option<i64>,
+    /// Cost per 1000 requests for this subscription, in `currency`.
+    pub cost_per_mille: Option<f64>,
+    /// ISO 4217 currency code (e.g. "USD", "EUR"). Required if `cost_per_mille` is set.
+    pub currency: Option<String>,
 }
 
 pub async fn handle_create_key(
@@ -194,6 +202,8 @@ pub async fn handle_create_key(
         rpd_limit: req.rpd_limit,
         last_used_at: None,
         created_at: String::new(),
+        cost_per_mille: req.cost_per_mille,
+        currency: req.currency,
     };
     let created = state.storage.create_api_key(key).await?;
     state.catalog.reload().await?;
@@ -211,6 +221,8 @@ pub struct UpdateKeyRequest {
     pub key_ref: Option<String>,
     pub rpm_limit: Option<Option<i64>>,
     pub rpd_limit: Option<Option<i64>>,
+    pub cost_per_mille: Option<Option<f64>>,
+    pub currency: Option<Option<String>>,
 }
 
 pub async fn handle_update_key(
@@ -227,6 +239,8 @@ pub async fn handle_update_key(
             req.key_ref,
             req.rpm_limit,
             req.rpd_limit,
+            req.cost_per_mille,
+            req.currency,
         )
         .await?;
     state.catalog.reload().await?;
@@ -260,6 +274,41 @@ pub async fn handle_resolve_key(
         status: if ok { "ok" } else { "missing" },
         checked,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// /admin/costs
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct CostQuery {
+    pub window_secs: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct CostRow {
+    pub provider: String,
+    pub currency: String,
+    pub total_cost: f64,
+    pub requests: i64,
+}
+
+pub async fn handle_cost_stats(
+    State(state): State<AppState>,
+    Query(q): Query<CostQuery>,
+) -> Result<Json<Vec<CostRow>>, AppError> {
+    let window_secs = q.window_secs.unwrap_or(30 * 24 * 3600); // 30 days
+    let rows = state.storage.cost_by_provider(window_secs).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(provider, currency, total_cost, requests)| CostRow {
+                provider,
+                currency,
+                total_cost,
+                requests,
+            })
+            .collect(),
+    ))
 }
 
 // ---------------------------------------------------------------------------

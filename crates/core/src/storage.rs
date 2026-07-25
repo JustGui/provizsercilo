@@ -40,6 +40,7 @@ pub trait StorageBackend: Send + Sync {
     async fn list_keys_for_provider(&self, provider_id: &str) -> Result<Vec<ApiKey>, StorageError>;
     async fn get_api_key(&self, id: &str) -> Result<ApiKey, StorageError>;
     async fn create_api_key(&self, key: ApiKey) -> Result<ApiKey, StorageError>;
+    #[allow(clippy::too_many_arguments)]
     async fn update_api_key_fields(
         &self,
         id: &str,
@@ -48,6 +49,8 @@ pub trait StorageBackend: Send + Sync {
         key_ref: Option<String>,
         rpm_limit: Option<Option<i64>>,
         rpd_limit: Option<Option<i64>>,
+        cost_per_mille: Option<Option<f64>>,
+        currency: Option<Option<String>>,
     ) -> Result<(), StorageError>;
     async fn soft_delete_api_key(&self, id: &str) -> Result<(), StorageError>;
     async fn touch_api_key(&self, id: &str) -> Result<(), StorageError>;
@@ -85,4 +88,11 @@ pub trait StorageBackend: Send + Sync {
         &self,
         window_secs: i64,
     ) -> Result<Vec<(String, i64, i64, Option<i64>)>, StorageError>;
+    /// Total spend per (provider_slug, currency) over the window. Currencies are
+    /// never summed together - a provider billed in both USD and EUR (e.g. two
+    /// subscriptions) yields two rows.
+    async fn cost_by_provider(
+        &self,
+        window_secs: i64,
+    ) -> Result<Vec<(String, String, f64, i64)>, StorageError>;
 }

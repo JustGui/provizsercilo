@@ -187,6 +187,7 @@ fn build_admin_router(app_state: AppState) -> Router<AppState> {
             "/keys/:id/resolve",
             get(handlers::admin::handle_resolve_key),
         )
+        .route("/costs", get(handlers::admin::handle_cost_stats))
         .route("/groups", get(handlers::admin::handle_list_groups))
         .route("/groups", post(handlers::admin::handle_create_group))
         .route("/groups/:slug", put(handlers::admin::handle_upsert_group))

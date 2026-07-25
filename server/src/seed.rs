@@ -241,6 +241,8 @@ pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
                 rpd_limit: None,
                 last_used_at: None,
                 created_at: String::new(),
+                cost_per_mille: None,
+                currency: None,
             };
             match storage.create_api_key(key).await {
                 Ok(_) => info!(slug, key_ref, "auto-registered key"),

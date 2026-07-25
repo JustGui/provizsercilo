@@ -23,7 +23,9 @@ CREATE TABLE IF NOT EXISTS api_keys (
     rpm_limit     INTEGER,
     rpd_limit     INTEGER,
     last_used_at  TEXT,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    cost_per_mille REAL,
+    currency      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS groups (
@@ -66,7 +68,9 @@ CREATE TABLE IF NOT EXISTS search_log (
     success         INTEGER,
     error_type      TEXT,
     fallback_chain  TEXT,
-    requested_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    requested_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    cost            REAL,
+    currency        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_api_keys_provider ON api_keys(provider_id);
@@ -76,9 +80,26 @@ CREATE INDEX IF NOT EXISTS idx_rate_events_key ON rate_events(api_key_id);
 CREATE INDEX IF NOT EXISTS idx_search_log_requested ON search_log(requested_at);
 "#;
 
+// ALTER TABLE ADD COLUMN for databases created before these columns existed.
+// CREATE TABLE IF NOT EXISTS in SCHEMA_V1 only handles fresh databases.
+const ALTER_STATEMENTS: &[&str] = &[
+    "ALTER TABLE api_keys ADD COLUMN cost_per_mille REAL",
+    "ALTER TABLE api_keys ADD COLUMN currency TEXT",
+    "ALTER TABLE search_log ADD COLUMN cost REAL",
+    "ALTER TABLE search_log ADD COLUMN currency TEXT",
+];
+
 pub fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
     conn.execute_batch(SCHEMA_V1)?;
+    for stmt in ALTER_STATEMENTS {
+        // Ignore "duplicate column name" - it means this DB already has the column.
+        if let Err(e) = conn.execute(stmt, []) {
+            if !e.to_string().contains("duplicate column name") {
+                return Err(e);
+            }
+        }
+    }
     Ok(())
 }
