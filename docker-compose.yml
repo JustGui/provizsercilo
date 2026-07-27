@@ -21,6 +21,9 @@ services:
       TAVILY_KEY_1: ${TAVILY_KEY_1:-}
       MOJEEK_KEY_1: ${MOJEEK_KEY_1:-}
       SERPER_KEY_1: ${SERPER_KEY_1:-}
+      EXA_KEY_1: ${EXA_KEY_1:-}
+      STAAN_KEY_1: ${STAAN_KEY_1:-}
+      DECODO_KEY_1: ${DECODO_KEY_1:-}
       # SearXNG and DDG bridge URLs stored as key_ref values
       SEARXNG_INSTANCE_1: http://searxng:8080
       DDG_BRIDGE_1: http://ddg-bridge:8001
