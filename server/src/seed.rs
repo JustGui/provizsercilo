@@ -154,6 +154,15 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
             no_cache: false,
         },
     ),
+    (
+        "decodo",
+        ProviderDef {
+            name: "Decodo Fast Search",
+            priority: 15,
+            key_prefix: "DECODO_KEY",
+            no_cache: false,
+        },
+    ),
 ];
 
 pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
