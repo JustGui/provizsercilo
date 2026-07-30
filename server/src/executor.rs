@@ -1,4 +1,9 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use providers::{ProviderError, SearchProvider, SearchQuery};
 use proviz_core::{
@@ -153,36 +158,52 @@ impl Executor {
         let mut all_decisions: Vec<DebugDecision> = Vec::new();
         let mut attempt_records: Vec<AttemptRecord> = Vec::new();
         let mut tier_idx: usize = 0;
+        // Counts only real provider calls (try_candidate invocations), not
+        // tier-skip bookkeeping — skips must never eat into this budget or a
+        // tier full of rate-limited free candidates could burn it before the
+        // paid fallback tier is ever reached.
+        let mut real_attempts: usize = 0;
 
         loop {
-            if attempt_records.len() > params.max_fallbacks {
+            if real_attempts > params.max_fallbacks {
                 break;
             }
 
             let current_tier = &tiers[tier_idx];
-            let selection = self
+            let outcome = self
                 .selector
                 .select(current_tier, &req, &excluded, params.debug);
 
-            // Current tier exhausted — advance to the next one (if any).
-            let (candidate, decisions) = match selection {
-                Some(pair) => pair,
-                None => {
-                    tier_idx += 1;
-                    if tier_idx >= tiers.len() {
-                        break;
-                    }
-                    debug!(tier = tier_idx, "advancing to next priority tier");
-                    continue;
-                }
-            };
-
             if params.debug {
-                all_decisions.extend(decisions);
+                all_decisions.extend(outcome.decisions.clone());
             }
 
+            // Current tier exhausted — record why every candidate in it was
+            // skipped (rate-limit cooldown, inactive, excluded, ...) so a
+            // final 503 can explain itself instead of returning an empty
+            // attempts/chain, then advance to the next tier (if any).
+            let Some(candidate) = outcome.candidate else {
+                for d in &outcome.decisions {
+                    let reason = d.reason.clone().unwrap_or_else(|| d.outcome.clone());
+                    chain_parts.push(format!("{}:skipped:{reason}", d.provider));
+                    attempt_records.push(AttemptRecord {
+                        provider: d.provider.clone(),
+                        success: false,
+                        error: Some(format!("skipped:{reason}")),
+                        duration_ms: 0,
+                    });
+                }
+                tier_idx += 1;
+                if tier_idx >= tiers.len() {
+                    break;
+                }
+                debug!(tier = tier_idx, "advancing to next priority tier");
+                continue;
+            };
+
+            real_attempts += 1;
             debug!(
-                attempt = attempt_records.len() + 1,
+                attempt = real_attempts,
                 provider = candidate.provider.slug,
                 key_ref = candidate.api_key.key_ref,
                 "trying candidate"
@@ -299,12 +320,16 @@ impl Executor {
             }
         }
 
-        debug!(
+        warn!(
             chain = chain_parts.join(","),
+            attempts = real_attempts,
+            skipped = attempt_records.len() - real_attempts,
             "all candidates exhausted, no result"
         );
-        Err(crate::error::AppError::service_unavailable(
-            "All provider candidates exhausted",
+        Err(crate::error::AppError::service_unavailable_with_attempts(
+            "All provider candidates exhausted or rate-limited",
+            chain_parts.join(","),
+            &attempt_records,
         ))
     }
 
@@ -332,38 +357,74 @@ impl Executor {
                 },
             })?;
 
-        self.usage.reserve(&candidate.api_key.id);
+        // A transient blip (timeout, network error, 5xx) gets one short-backoff
+        // retry against the *same* candidate before it's marked down and
+        // excluded from the rest of this call's fallback chain — avoids
+        // burning a whole (rate-limit-cooldown-triggering) attempt on a
+        // one-off glitch. Non-transient errors (429, 401/403, empty results)
+        // fail fast since a retry can't help.
+        const MAX_ATTEMPTS: u32 = 2;
+        const RETRY_BACKOFF: Duration = Duration::from_millis(200);
 
-        let query = SearchQuery {
-            query: &params.query,
-            n: params.n,
-            language: params.language.as_deref(),
-            country: params.country.as_deref(),
-            api_key: &api_key,
-            extra_snippets: params.extra_snippets,
-            full_content: params.full_content.as_deref(),
-            max_snippets: params.max_snippets,
-            min_score: params.min_score,
-            include_domains: &params.include_domains,
-            exclude_domains: &params.exclude_domains,
-        };
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(params.timeout_ms),
-            provider.search(query),
-        )
-        .await;
+        let mut last_err = ProviderError::Timeout;
+        for attempt in 0..MAX_ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(RETRY_BACKOFF).await;
+                debug!(
+                    provider = candidate.provider.slug,
+                    attempt, "retrying after transient error"
+                );
+            }
 
-        self.usage.complete(&candidate.api_key.id);
+            self.usage.reserve(&candidate.api_key.id);
 
-        let storage = Arc::clone(self.catalog.storage());
-        let kid = candidate.api_key.id.clone();
-        tokio::spawn(async move {
-            let _ = storage.touch_api_key(&kid).await;
-        });
+            let query = SearchQuery {
+                query: &params.query,
+                n: params.n,
+                language: params.language.as_deref(),
+                country: params.country.as_deref(),
+                api_key: &api_key,
+                extra_snippets: params.extra_snippets,
+                full_content: params.full_content.as_deref(),
+                max_snippets: params.max_snippets,
+                min_score: params.min_score,
+                include_domains: &params.include_domains,
+                exclude_domains: &params.exclude_domains,
+            };
+            let result = tokio::time::timeout(
+                Duration::from_millis(params.timeout_ms),
+                provider.search(query),
+            )
+            .await;
 
-        match result {
-            Ok(inner) => inner,
-            Err(_elapsed) => Err(ProviderError::Timeout),
+            self.usage.complete(&candidate.api_key.id);
+
+            let storage = Arc::clone(self.catalog.storage());
+            let kid = candidate.api_key.id.clone();
+            tokio::spawn(async move {
+                let _ = storage.touch_api_key(&kid).await;
+            });
+
+            let err = match result {
+                Ok(Ok(output)) => return Ok(output),
+                Ok(Err(e)) => e,
+                Err(_elapsed) => ProviderError::Timeout,
+            };
+
+            let is_last_attempt = attempt + 1 >= MAX_ATTEMPTS;
+            if is_last_attempt || !is_transient(&err) {
+                return Err(err);
+            }
+            last_err = err;
         }
+        Err(last_err)
     }
+}
+
+/// Whether retrying the same candidate right away might succeed: network
+/// blips, timeouts, and 5xx responses are worth one retry; rate limits,
+/// auth failures, and empty results are not (a retry can't fix them).
+fn is_transient(err: &ProviderError) -> bool {
+    matches!(err, ProviderError::Timeout | ProviderError::Request(_))
+        || matches!(err, ProviderError::Http { status, .. } if *status >= 500)
 }

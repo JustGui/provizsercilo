@@ -133,7 +133,7 @@ fn test_selector_picks_lowest_priority() {
         make_candidate("tavily", "k2", 0, true), // lower priority = preferred
     ];
     let req = SelectRequest::default();
-    let (winner, _) = sel.select(&pool, &req, &[], false).unwrap();
+    let winner = sel.select(&pool, &req, &[], false).candidate.unwrap();
     assert_eq!(winner.provider.slug, "tavily");
 }
 
@@ -145,7 +145,7 @@ fn test_selector_skips_inactive_provider() {
         make_candidate("tavily", "k2", 5, true),
     ];
     let req = SelectRequest::default();
-    let (winner, _) = sel.select(&pool, &req, &[], false).unwrap();
+    let winner = sel.select(&pool, &req, &[], false).candidate.unwrap();
     assert_eq!(winner.provider.slug, "tavily");
 }
 
@@ -160,7 +160,7 @@ fn test_selector_skips_rate_limited_key() {
         make_candidate("tavily", "k2", 5, true),
     ];
     let req = SelectRequest::default();
-    let (winner, _) = sel.select(&pool, &req, &[], false).unwrap();
+    let winner = sel.select(&pool, &req, &[], false).candidate.unwrap();
     assert_eq!(winner.provider.slug, "tavily");
 }
 
@@ -172,7 +172,10 @@ fn test_selector_skips_excluded_key() {
         make_candidate("tavily", "k2", 5, true),
     ];
     let req = SelectRequest::default();
-    let (winner, _) = sel.select(&pool, &req, &["k1".to_string()], false).unwrap();
+    let winner = sel
+        .select(&pool, &req, &["k1".to_string()], false)
+        .candidate
+        .unwrap();
     assert_eq!(winner.provider.slug, "tavily");
 }
 
@@ -181,8 +184,11 @@ fn test_selector_returns_none_when_all_excluded() {
     let sel = make_selector();
     let pool = vec![make_candidate("brave", "k1", 0, true)];
     let req = SelectRequest::default();
-    let result = sel.select(&pool, &req, &["k1".to_string()], false);
-    assert!(result.is_none());
+    let outcome = sel.select(&pool, &req, &["k1".to_string()], false);
+    assert!(outcome.candidate.is_none());
+    // Skip reasons must survive even with debug=false — this is what lets
+    // the executor explain a total-exhaustion 503 instead of returning empty.
+    assert!(!outcome.decisions.is_empty());
 }
 
 #[test]
@@ -193,10 +199,11 @@ fn test_selector_debug_output() {
         make_candidate("tavily", "k2", 5, true),
     ];
     let req = SelectRequest::default();
-    let (_, decisions) = sel.select(&pool, &req, &[], true).unwrap();
-    assert!(!decisions.is_empty());
+    let outcome = sel.select(&pool, &req, &[], true);
+    assert!(outcome.candidate.is_some());
+    assert!(!outcome.decisions.is_empty());
     // Winner should have outcome "selected"
-    let selected = decisions.iter().find(|d| d.outcome == "selected");
+    let selected = outcome.decisions.iter().find(|d| d.outcome == "selected");
     assert!(selected.is_some());
 }
 
@@ -211,7 +218,7 @@ fn test_selector_respects_request_exclude_provider_slugs() {
         exclude_provider_slugs: vec!["brave".to_string()],
         ..Default::default()
     };
-    let (winner, _) = sel.select(&pool, &req, &[], false).unwrap();
+    let winner = sel.select(&pool, &req, &[], false).candidate.unwrap();
     assert_eq!(winner.provider.slug, "tavily");
 }
 
@@ -316,7 +323,7 @@ fn test_profile_exclude_removes_from_pool() {
         language: Some("fr".to_string()),
         ..Default::default()
     };
-    let (winner, _) = sel.select(&pool, &req, &[], false).unwrap();
+    let winner = sel.select(&pool, &req, &[], false).candidate.unwrap();
     assert_eq!(winner.provider.slug, "brave");
 }
 

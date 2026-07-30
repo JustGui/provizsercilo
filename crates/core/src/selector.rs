@@ -77,14 +77,17 @@ impl Selector {
     /// Select the best candidate from `pool`, respecting exclusions from `req`
     /// and the `extra_excludes` list (accumulated during fallback).
     ///
-    /// Returns the winning Candidate plus optional debug trace.
+    /// Returns a `SelectOutcome`: `candidate` is `None` when every entry in
+    /// `pool` was hard-filtered out. `decisions` always carries the skip
+    /// reasons (needed for error reporting even when `debug` is off) plus,
+    /// when `debug` is true, the full scored trace.
     pub fn select(
         &self,
         pool: &[Candidate],
         req: &SelectRequest,
         extra_excludes: &[String],
         debug: bool,
-    ) -> Option<(Candidate, Vec<DebugDecision>)> {
+    ) -> SelectOutcome {
         let lang = req.language.as_deref();
         let cty = req.country.as_deref();
         let profile = self.profiles.find(lang, cty);
@@ -101,45 +104,37 @@ impl Selector {
         // Pass 1 + 2: hard filters and collect eligible candidates with raw stats.
         let mut raw: Vec<CandidateStats> = Vec::new();
         for c in pool {
-            // Hard filters
+            // Hard filters. Skip reasons are always recorded (cheap) since the
+            // caller needs them to explain a total-exhaustion failure even
+            // when the request didn't ask for full debug tracing.
             if !c.provider.is_active {
-                if debug {
-                    decisions.push(skip_decision(c, "provider_inactive", None, None));
-                }
+                decisions.push(skip_decision(c, "provider_inactive", None, None));
                 continue;
             }
             if !c.api_key.is_active {
-                if debug {
-                    decisions.push(skip_decision(c, "key_inactive", None, None));
-                }
+                decisions.push(skip_decision(c, "key_inactive", None, None));
                 continue;
             }
             if extra_excludes.contains(&c.api_key.id) || req.exclude_key_ids.contains(&c.api_key.id)
             {
-                if debug {
-                    decisions.push(skip_decision(c, "excluded_by_request", None, None));
-                }
+                decisions.push(skip_decision(c, "excluded_by_request", None, None));
                 continue;
             }
             if self.rate_limit.is_limited(&c.api_key.id) {
                 let remaining = self.rate_limit.cooldown_remaining_ms(&c.api_key.id);
-                if debug {
-                    decisions.push(skip_decision(c, "rpm_cooldown", None, Some(remaining)));
-                }
+                decisions.push(skip_decision(c, "rpm_cooldown", None, Some(remaining)));
                 continue;
             }
             if excluded_providers.contains(c.provider.slug.as_str()) {
-                if debug {
-                    decisions.push(skip_decision(
-                        c,
-                        "profile_excluded",
-                        Some(format!(
-                            "language={} excluded by profile",
-                            lang.unwrap_or("*")
-                        )),
-                        None,
-                    ));
-                }
+                decisions.push(skip_decision(
+                    c,
+                    "profile_excluded",
+                    Some(format!(
+                        "language={} excluded by profile",
+                        lang.unwrap_or("*")
+                    )),
+                    None,
+                ));
                 continue;
             }
 
@@ -168,7 +163,10 @@ impl Selector {
         }
 
         if raw.is_empty() {
-            return None;
+            return SelectOutcome {
+                candidate: None,
+                decisions,
+            };
         }
 
         // Normalisation helpers
@@ -256,8 +254,17 @@ impl Selector {
             });
         }
 
-        Some((winner, decisions))
+        SelectOutcome {
+            candidate: Some(winner),
+            decisions,
+        }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct SelectOutcome {
+    pub candidate: Option<Candidate>,
+    pub decisions: Vec<DebugDecision>,
 }
 
 // ---------------------------------------------------------------------------

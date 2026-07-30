@@ -28,6 +28,8 @@ pub async fn require_admin_token(
             status: StatusCode::SERVICE_UNAVAILABLE,
             message: "Admin API disabled: ADMIN_TOKEN not configured".to_string(),
             code: "admin_disabled".to_string(),
+            fallback_chain: None,
+            attempts: None,
         });
     };
 
