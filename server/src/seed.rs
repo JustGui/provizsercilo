@@ -163,6 +163,24 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
             no_cache: false,
         },
     ),
+    (
+        "you-com",
+        ProviderDef {
+            name: "You.com",
+            priority: 16,
+            key_prefix: "YOU_COM_KEY",
+            no_cache: false,
+        },
+    ),
+    (
+        "parallel",
+        ProviderDef {
+            name: "Parallel",
+            priority: 17,
+            key_prefix: "PARALLEL_KEY",
+            no_cache: false,
+        },
+    ),
 ];
 
 pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {

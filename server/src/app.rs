@@ -8,7 +8,7 @@ use axum::{
     routing::{delete, get, patch, post, put},
     Router,
 };
-use providers::SearchProvider;
+use providers::{ContentProvider, SearchProvider};
 use proviz_core::{
     language_profile::ProfileMatcher,
     rate_limit::{RateLimitState, UsageTracker},
@@ -18,12 +18,14 @@ use proviz_core::{
 use tower_http::trace::TraceLayer;
 
 use crate::{
-    catalog::CatalogStore, config::Config, executor::Executor, handlers, stats::StatsTracker,
+    catalog::CatalogStore, config::Config, content_executor::ContentExecutor, executor::Executor,
+    handlers, stats::StatsTracker,
 };
 
 #[derive(Clone)]
 pub struct AppState {
     pub executor: Arc<Executor>,
+    pub content_executor: Arc<ContentExecutor>,
     pub catalog: CatalogStore,
     pub storage: Arc<dyn StorageBackend>,
     pub cache: Arc<cache::QueryCache>,
@@ -69,6 +71,14 @@ pub fn build_providers() -> HashMap<String, Arc<dyn SearchProvider>> {
         "decodo".to_string(),
         Arc::new(providers::decodo::DecodoProvider::default()),
     );
+    map.insert(
+        "you-com".to_string(),
+        Arc::new(providers::you_com::YouComProvider::default()),
+    );
+    map.insert(
+        "parallel".to_string(),
+        Arc::new(providers::parallel::ParallelProvider::default()),
+    );
     // DDG bridge — one adapter per backend so each has its own cooldown in proviz-sercilo.
     // The fan-out "ddg" adapter is intentionally removed; proviz owns the fallback logic.
     for backend in &[
@@ -87,6 +97,21 @@ pub fn build_providers() -> HashMap<String, Arc<dyn SearchProvider>> {
             )),
         );
     }
+    map
+}
+
+/// The page-extraction pool: providers implementing `ContentProvider`. Keyed by
+/// the same slug as `build_providers` so a candidate row selects the right one.
+pub fn build_content_providers() -> HashMap<String, Arc<dyn ContentProvider>> {
+    let mut map: HashMap<String, Arc<dyn ContentProvider>> = HashMap::new();
+    map.insert(
+        "you-com".to_string(),
+        Arc::new(providers::you_com::YouComProvider::default()),
+    );
+    map.insert(
+        "parallel".to_string(),
+        Arc::new(providers::parallel::ParallelProvider::default()),
+    );
     map
 }
 
@@ -141,8 +166,19 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
         Arc::clone(&stats),
     ));
 
+    let content_executor = Arc::new(ContentExecutor::new(
+        catalog.clone(),
+        Arc::clone(&selector),
+        build_content_providers(),
+        rate_limit.clone(),
+        usage.clone(),
+        config.secrets_dir.clone(),
+        Arc::clone(&stats),
+    ));
+
     let state = AppState {
         executor,
+        content_executor,
         catalog,
         storage,
         cache,
@@ -158,6 +194,7 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
 
     let router = Router::new()
         .route("/search", post(handlers::search::handle_search))
+        .route("/contents", post(handlers::contents::handle_contents))
         .route("/report", post(handlers::report::handle_report))
         .route("/health", get(handlers::health::handle_health))
         .route("/stats", get(handlers::stats::handle_stats))

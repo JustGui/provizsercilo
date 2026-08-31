@@ -3,13 +3,15 @@ pub mod ddg_bridge;
 pub mod decodo;
 pub mod exa;
 pub mod mojeek;
+pub mod parallel;
 pub mod searxng;
 pub mod serper;
 pub mod staan;
 pub mod tavily;
+pub mod you_com;
 
 use async_trait::async_trait;
-use proviz_core::models::SearchResult;
+use proviz_core::models::{FullContent, SearchResult};
 use thiserror::Error;
 
 /// Output of a successful search. `effective_slug` is set by meta-providers
@@ -113,6 +115,53 @@ pub trait SearchProvider: Send + Sync {
     }
 
     async fn search(&self, q: SearchQuery<'_>) -> Result<SearchOutput, ProviderError>;
+}
+
+// ---------------------------------------------------------------------------
+// Page content extraction (the /contents endpoint's provider pool)
+// ---------------------------------------------------------------------------
+
+/// One page-extraction call. `urls` is a batch (the executor already chunked it
+/// to `ContentProvider::max_batch`). `api_key` is the resolved key value.
+pub struct ContentQuery<'a> {
+    pub urls: &'a [String],
+    /// Requested body format hint: "markdown" | "html" | "text".
+    pub format: &'a str,
+    /// Optional focus hint passed through to providers that support it (Parallel).
+    pub objective: Option<&'a str>,
+    pub api_key: &'a str,
+}
+
+/// A successfully extracted page.
+pub struct ContentDoc {
+    pub url: String,
+    pub title: Option<String>,
+    pub published_date: Option<String>,
+    pub content: FullContent,
+}
+
+/// Output of one `ContentProvider::fetch` call. `docs` are the pages that came
+/// back with a body; `failed` lists `(url, reason)` for pages this provider
+/// could not extract — those are *soft* per-URL misses, the executor retries
+/// them against the next provider without cooling this one down.
+pub struct ContentOutput {
+    pub docs: Vec<ContentDoc>,
+    pub failed: Vec<(String, String)>,
+}
+
+/// Common interface for page-content extraction adapters. A provider may
+/// implement both this and `SearchProvider`.
+#[async_trait]
+pub trait ContentProvider: Send + Sync {
+    fn slug(&self) -> &str;
+
+    /// Max URLs accepted in a single upstream call. The executor slices larger
+    /// request lists into chunks of this size.
+    fn max_batch(&self) -> usize {
+        1
+    }
+
+    async fn fetch(&self, q: ContentQuery<'_>) -> Result<ContentOutput, ProviderError>;
 }
 
 /// Extract the canonical domain from a URL string.
