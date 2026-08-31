@@ -1,6 +1,7 @@
 mod app;
 mod catalog;
 mod config;
+mod content_executor;
 mod error;
 mod executor;
 mod handlers;
