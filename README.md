@@ -25,6 +25,9 @@ Self-hosted Rust HTTP service that acts as a smart search-engine router. Callers
 | `serper` | API key | |
 | `exa` | API key | |
 | `staan` | API key | Supports `full_content` + `extra_snippets` enrichment |
+| `decodo` | API key | Basic-auth token |
+| `you-com` | API key | Supports `full_content` enrichment; also in the `/contents` extractor pool |
+| `parallel` | API key | Also in the `/contents` extractor pool |
 | `searxng` | URL | Self-hosted; supports multiple instances |
 | `ddg` | URL | Requires the included Python bridge |
 
@@ -96,7 +99,7 @@ Optional fields — fetch and rerank result pages in the same call instead of sc
 {
   "query": "vector database comparison",
   "extra_snippets": true,       // semantically scored chunks; staan only
-  "full_content": "markdown",   // "markdown" | "html" | "text"; staan + tavily
+  "full_content": "markdown",   // "markdown" | "html" | "text"; staan + tavily + you-com
   "max_snippets": 5,            // extra_snippets only, default 3
   "min_score": 0.2,             // extra_snippets only, default 0.1
   "include_domains": ["qdrant.tech", "weaviate.io"],
@@ -105,6 +108,30 @@ Optional fields — fetch and rerank result pages in the same call instead of sc
 ```
 
 Each result gains `full_content: {text, format, length}` and/or `extra_snippets: [{chunk, score}]` when populated. A page's enriched content is cached by URL (`DOC_CACHE_TTL_SECS`) independently of the query, so a different query surfacing the same page doesn't re-fetch it.
+
+### Page content extraction
+
+Standalone endpoint for pulling clean page bodies — hand it a batch of URLs, it
+routes them through a pool of extraction-capable providers (You.com, Parallel)
+with per-URL fallback, and reuses the same URL-keyed cache the search enrichment
+path fills.
+
+```
+POST /contents
+Content-Type: application/json
+
+{
+  "urls": ["https://example.com", "https://www.rust-lang.org"],  // capped at 50
+  "format": "markdown",   // "markdown" (default) | "html" | "text"
+  "objective": "…",       // optional focus hint (Parallel)
+  "group": "extract",     // optional — scope/prioritize the extractor pool
+  "fresh": false          // true bypasses the URL cache
+}
+```
+
+Returns `docs[]` (one per URL, in order) with `content: {text, format, length}`
+and `source` (provider slug or `"cache"`), or an `error` string when no provider
+could fetch it, plus `meta` and `attempts`.
 
 ### Admin
 
