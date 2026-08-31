@@ -33,6 +33,9 @@ pub struct SearchParams {
     pub full_content: Option<String>,
     pub max_snippets: Option<usize>,
     pub min_score: Option<f64>,
+    /// See `SearchRequest::require_enrichment`. `false` = enrichment is best-effort:
+    /// don't filter the pool to capable providers, don't 503 when none can enrich.
+    pub require_enrichment: bool,
     pub include_domains: Vec<String>,
     pub exclude_domains: Vec<String>,
 }
@@ -107,7 +110,7 @@ impl Executor {
         // deliver every requested field. Otherwise a mid-chain fallback to a
         // non-enrichment provider (e.g. Brave) would silently hand the caller
         // bare results with no signal that full_content/extra_snippets never came.
-        if params.wants_enrichment() {
+        if params.wants_enrichment() && params.require_enrichment {
             pool.retain(|c| {
                 let Some(provider) = self.providers.get(&c.provider.slug) else {
                     return false;
@@ -120,7 +123,7 @@ impl Executor {
         if pool.is_empty() {
             debug!("no provider candidates in pool");
             return Err(crate::error::AppError::service_unavailable(
-                if params.wants_enrichment() {
+                if params.wants_enrichment() && params.require_enrichment {
                     "No enrichment-capable provider candidates available"
                 } else {
                     "No provider candidates available"

@@ -42,6 +42,15 @@ pub struct SearchRequest {
     pub full_content: Option<String>,
     pub max_snippets: Option<usize>,
     pub min_score: Option<f64>,
+    /// When an enrichment field (`extra_snippets` / `full_content`) is requested:
+    /// `true` (default) keeps the strict behaviour - the candidate pool is filtered
+    /// to providers that can actually deliver it, and the request 503s if none can.
+    /// `false` makes enrichment best-effort - the normal group cascade runs
+    /// unfiltered, capable providers fill the enriched fields when they're reached,
+    /// and a fallback to a non-capable provider simply returns bare results
+    /// (`extra_snippets` / `full_content` absent) rather than failing.
+    #[serde(default = "default_require_enrichment")]
+    pub require_enrichment: bool,
     #[serde(default)]
     pub include_domains: Vec<String>,
     #[serde(default)]
@@ -50,6 +59,10 @@ pub struct SearchRequest {
 
 fn default_n() -> usize {
     10
+}
+
+fn default_require_enrichment() -> bool {
+    true
 }
 
 /// Folds every enrichment-affecting field into one discriminator string so the
@@ -167,6 +180,7 @@ pub async fn handle_search(
             full_content: req.full_content.clone(),
             max_snippets: req.max_snippets,
             min_score: req.min_score,
+            require_enrichment: req.require_enrichment,
             include_domains: req.include_domains.clone(),
             exclude_domains: req.exclude_domains.clone(),
         })
