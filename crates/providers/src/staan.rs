@@ -8,6 +8,11 @@ use crate::{
     SearchQuery,
 };
 
+/// STAAN's `/v2/search/web` rejects any `count` other than 10
+/// ("count must be equal to 10"). We always request 10 and slice to the
+/// caller's `n` locally.
+const STAAN_REQUIRED_COUNT: usize = 10;
+
 pub struct StaanProvider {
     client: reqwest::Client,
 }
@@ -117,7 +122,7 @@ impl SearchProvider for StaanProvider {
 
         let body = StaanRequest {
             q: q.query,
-            count: q.n,
+            count: STAAN_REQUIRED_COUNT,
             market,
             extra_snippets: q.extra_snippets.then_some(true),
             full_content: q.full_content,
@@ -191,7 +196,12 @@ impl SearchProvider for StaanProvider {
                 }),
             })
             .collect();
-        let results = sanitize_results(results);
+        let mut results = sanitize_results(results);
+        // We always ask STAAN for 10 (its only accepted `count`); honour the
+        // caller's real `n` here.
+        if q.n > 0 && results.len() > q.n {
+            results.truncate(q.n);
+        }
 
         debug!(provider = "staan", n = results.len(), "search complete");
         if results.is_empty() {
