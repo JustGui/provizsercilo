@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use proviz_core::models::{FullContent, SearchResult};
+use proviz_core::models::{ExtraSnippet, FullContent, SearchResult};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -51,7 +51,9 @@ struct SearchRequest<'a> {
 #[derive(Serialize)]
 struct Extraction {
     extraction_mode: &'static str,
-    full_page: FullPage,
+    /// Only sent for `full_page` mode; `highlights` mode takes no nested params.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    full_page: Option<FullPage>,
 }
 
 #[derive(Serialize)]
@@ -88,6 +90,9 @@ struct WebResult {
 struct PageContents {
     markdown: Option<String>,
     html: Option<String>,
+    /// `extraction_mode: "highlights"` — query-relevant verbatim passages, no scores.
+    #[serde(default)]
+    highlights: Vec<String>,
 }
 
 /// Which concrete format You.com's `extraction_formats` should ask for, and the
@@ -104,6 +109,8 @@ fn parse_search_response(
     body: &str,
     n: usize,
     full_content_fmt: Option<&str>,
+    want_highlights: bool,
+    max_snippets: Option<usize>,
 ) -> Result<Vec<SearchResult>, ProviderError> {
     let resp: SearchResponse =
         serde_json::from_str(body).map_err(|e| ProviderError::Parse(e.to_string()))?;
@@ -119,9 +126,32 @@ fn parse_search_response(
             } else {
                 r.description
             };
+            let contents = r.contents;
+            // `highlights` mode passages (verbatim, unscored) → synthetic descending
+            // scores so `SearchHit::snippets_block`'s score-sort keeps You.com's order.
+            let extra_snippets = if want_highlights {
+                let mut chunks: Vec<ExtraSnippet> = contents
+                    .as_ref()
+                    .map(|c| c.highlights.clone())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .enumerate()
+                    .map(|(j, chunk)| ExtraSnippet {
+                        chunk,
+                        score: 1.0 - j as f64 * 0.01,
+                    })
+                    .collect();
+                if let Some(m) = max_snippets {
+                    chunks.truncate(m);
+                }
+                (!chunks.is_empty()).then_some(chunks)
+            } else {
+                None
+            };
             let full_content = full_content_fmt.and_then(|hint| {
                 let (_, label) = resolve_format(hint);
-                let text = r.contents.and_then(|c| match label {
+                let text = contents.and_then(|c| match label {
                     "html" => c.html,
                     _ => c.markdown,
                 });
@@ -143,7 +173,7 @@ fn parse_search_response(
                 published_date: r.page_age,
                 language: None,
                 full_content,
-                extra_snippets: None,
+                extra_snippets,
             }
         })
         .collect();
@@ -233,16 +263,31 @@ impl SearchProvider for YouComProvider {
         true
     }
 
+    fn supports_extra_snippets(&self) -> bool {
+        true
+    }
+
     async fn search(&self, q: SearchQuery<'_>) -> Result<SearchOutput, ProviderError> {
-        let extraction = q.full_content.map(|hint| {
+        // You.com's `extraction` is one mode per call. `full_page` returns the whole
+        // body (a superset), so it wins when both are requested; otherwise
+        // `highlights` gives query-relevant verbatim passages at the same CPM.
+        let want_highlights = q.full_content.is_none() && q.extra_snippets;
+        let extraction = if let Some(hint) = q.full_content {
             let (fmt, _) = resolve_format(hint);
-            Extraction {
+            Some(Extraction {
                 extraction_mode: "full_page",
-                full_page: FullPage {
+                full_page: Some(FullPage {
                     extraction_formats: vec![fmt],
-                },
-            }
-        });
+                }),
+            })
+        } else if want_highlights {
+            Some(Extraction {
+                extraction_mode: "highlights",
+                full_page: None,
+            })
+        } else {
+            None
+        };
 
         let body = SearchRequest {
             query: q.query,
@@ -274,7 +319,8 @@ impl SearchProvider for YouComProvider {
             .text()
             .await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
-        let results = parse_search_response(&text, q.n, q.full_content)?;
+        let results =
+            parse_search_response(&text, q.n, q.full_content, want_highlights, q.max_snippets)?;
 
         debug!(provider = "you-com", n = results.len(), "search complete");
         if results.is_empty() {
@@ -339,13 +385,50 @@ mod tests {
                 { "url": "/relative", "title": "bad", "description": "x" }
             ]}
         }"##;
-        let results = parse_search_response(body, 10, Some("markdown")).unwrap();
+        let results = parse_search_response(body, 10, Some("markdown"), false, None).unwrap();
         assert_eq!(results.len(), 1, "relative URL dropped by sanitize");
         assert_eq!(results[0].url, "https://a.test/1");
         assert_eq!(results[0].snippet, "desc a");
         let fc = results[0].full_content.as_ref().unwrap();
         assert_eq!(fc.format, "markdown");
         assert_eq!(fc.text, "# body a");
+        assert!(results[0].extra_snippets.is_none());
+    }
+
+    #[test]
+    fn parses_highlights_into_extra_snippets() {
+        let body = r##"{
+            "results": { "web": [
+                { "url": "https://a.test/1", "title": "A", "description": "d",
+                  "contents": { "highlights": ["passage one", "passage two", ""] } }
+            ]}
+        }"##;
+        let results = parse_search_response(body, 10, None, true, None).unwrap();
+        let es = results[0].extra_snippets.as_ref().unwrap();
+        assert_eq!(es.len(), 2, "empty highlight dropped");
+        assert_eq!(es[0].chunk, "passage one");
+        assert!(es[0].score > es[1].score, "descending synthetic scores");
+        assert!(results[0].full_content.is_none());
+    }
+
+    #[test]
+    fn highlights_respect_max_snippets() {
+        let body = r#"{"results":{"web":[
+            {"url":"https://a.test/1","title":"A","description":"d",
+             "contents":{"highlights":["h1","h2","h3","h4"]}}
+        ]}}"#;
+        let results = parse_search_response(body, 10, None, true, Some(2)).unwrap();
+        assert_eq!(results[0].extra_snippets.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn highlights_not_parsed_when_not_requested() {
+        let body = r#"{"results":{"web":[
+            {"url":"https://a.test/1","title":"A","description":"d",
+             "contents":{"highlights":["h1"]}}
+        ]}}"#;
+        let results = parse_search_response(body, 10, None, false, None).unwrap();
+        assert!(results[0].extra_snippets.is_none());
     }
 
     #[test]
@@ -353,7 +436,7 @@ mod tests {
         let body = r#"{"results":{"web":[
             {"url":"https://a.test/1","title":"A","description":"","snippets":["one","two"]}
         ]}}"#;
-        let results = parse_search_response(body, 10, None).unwrap();
+        let results = parse_search_response(body, 10, None, false, None).unwrap();
         assert_eq!(results[0].snippet, "one … two");
         assert!(results[0].full_content.is_none());
     }
