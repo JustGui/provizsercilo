@@ -23,7 +23,9 @@ struct ProviderDef {
 
 // Priority convention: lower number = preferred (matches norm_inv scoring and group member p0/p1/…).
 // DDG individual backends are ordered to match the bridge's default BACKEND_ORDER:
-//   yandex, mojeek, startpage, yahoo, google, duckduckgo, brave
+//   yandex, startpage, yahoo, duckduckgo, brave
+// (ddg-google / ddg-mojeek dropped 2026-09-26: they return nothing from a datacenter IP.
+//  Existing rows are not deleted by this seed - deactivate them via the admin API.)
 // Note: the old "ddg" fan-out provider is intentionally absent — each backend is now its own
 // candidate so cooldowns are isolated. Deactivate any existing "ddg" row via the admin API:
 //   PATCH /admin/providers/ddg  { "is_active": false }
@@ -33,15 +35,6 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
         ProviderDef {
             name: "DDG Bridge (Yandex backend)",
             priority: 1,
-            key_prefix: "DDG_BRIDGE",
-            no_cache: true,
-        },
-    ),
-    (
-        "ddg-mojeek",
-        ProviderDef {
-            name: "DDG Bridge (Mojeek backend)",
-            priority: 2,
             key_prefix: "DDG_BRIDGE",
             no_cache: true,
         },
@@ -60,15 +53,6 @@ static PROVIDERS: &[(&str, ProviderDef)] = &[
         ProviderDef {
             name: "DDG Bridge (Yahoo backend)",
             priority: 4,
-            key_prefix: "DDG_BRIDGE",
-            no_cache: true,
-        },
-    ),
-    (
-        "ddg-google",
-        ProviderDef {
-            name: "DDG Bridge (Google backend)",
-            priority: 5,
             key_prefix: "DDG_BRIDGE",
             no_cache: true,
         },
