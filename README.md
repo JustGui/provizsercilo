@@ -64,8 +64,11 @@ Brings up ProvizSercilo, SearXNG, and the DDG bridge together.
 | `CACHE_TTL_SECS` | `3600` | Query cache TTL; `0` disables cache |
 | `DOC_CACHE_TTL_SECS` | `21600` (6h) | URL-keyed enrichment content cache TTL — separate from the query cache, reused across different queries that surface the same page |
 | `MAX_FALLBACKS` | `3` | Maximum provider fallback attempts per request |
+| `TRANSIENT_FAILURES_BEFORE_COOLDOWN` | `3` | Consecutive transient failures (timeout, 5xx, empty result) before a key is put on cooldown; a success resets the count. 429 / 401 / 403 still cool the key down at once. `1` = cool down on the first failure (old behaviour) |
 | `LOG_LEVEL` | `INFO` | `TRACE` \| `DEBUG` \| `INFO` \| `WARN` \| `ERROR` |
 | `LOG_FORMAT` | `json` | `json` \| `pretty` |
+
+Per-key limits (`rps_limit`, `rpm_limit`, `rpd_limit` on an API key) are enforced: a key whose configured budget is used up is skipped (`budget_exhausted` in the fallback chain) instead of being sent a request the provider would answer with a 429. `rpd_limit` is therefore a hard daily cap - useful on an expensive last-resort provider. Budgets are counted in memory, so a restart starts them over.
 
 ### Storage backends
 

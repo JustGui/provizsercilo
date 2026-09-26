@@ -64,6 +64,9 @@ impl ProviderError {
             Self::Blocked => "auth",
             Self::Timeout => "timeout",
             Self::Empty => "empty",
+            // A client-side timeout surfaces as a reqwest error; it was counted as a
+            // generic "error" (60 s cooldown) instead of a timeout.
+            Self::Request(e) if e.is_timeout() => "timeout",
             _ => "error",
         }
     }

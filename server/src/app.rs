@@ -140,7 +140,8 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
     let cache = Arc::new(cache::QueryCache::new());
     let doc_cache = Arc::new(cache::DocCache::new());
     let stats = Arc::new(StatsTracker::new());
-    let rate_limit = RateLimitState::default();
+    let rate_limit =
+        RateLimitState::with_transient_threshold(config.transient_failures_before_cooldown);
     let usage = UsageTracker::default();
 
     let profiles_content = std::fs::read_to_string(&config.profiles_path)

@@ -125,6 +125,15 @@ impl Selector {
                 decisions.push(skip_decision(c, "rpm_cooldown", None, Some(remaining)));
                 continue;
             }
+            if self.usage.budget_exhausted(
+                &c.api_key.id,
+                c.api_key.rps_limit,
+                c.api_key.rpm_limit,
+                c.api_key.rpd_limit,
+            ) {
+                decisions.push(skip_decision(c, "budget_exhausted", None, None));
+                continue;
+            }
             if excluded_providers.contains(c.provider.slug.as_str()) {
                 decisions.push(skip_decision(
                     c,

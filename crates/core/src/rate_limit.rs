@@ -34,6 +34,14 @@ impl ErrorType {
         }
     }
 
+    /// A failure that says nothing reliable about the key itself: one slow answer, one
+    /// 5xx, one query with no results. Only a run of them should take the key out of
+    /// rotation (see `RateLimitState::report_error`). 429 / 401 / 403 are explicit
+    /// provider signals and still cool the key down at once.
+    pub fn is_transient(self) -> bool {
+        matches!(self, Self::Timeout | Self::Empty | Self::Error)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Rps => "rps",
@@ -51,12 +59,40 @@ impl ErrorType {
 // RateLimitState - reactive cooldowns
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default)]
+/// Consecutive transient failures of one key before it is cooled down. A single slow or
+/// failed answer used to black out the key for 60 s; with one key per provider that sent
+/// every search down the cascade to the paid fallbacks (Staan -> Exa, 2026-09-25).
+pub const DEFAULT_TRANSIENT_FAILURES_BEFORE_COOLDOWN: u32 = 3;
+
+/// A run of transient failures only counts while they keep coming: one older than this
+/// starts a new run.
+const TRANSIENT_WINDOW: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone)]
 pub struct RateLimitState {
     cooldowns: Arc<DashMap<String, (Instant, ErrorType)>>,
+    /// Per key: (consecutive transient failures, time of the last one).
+    transient: Arc<DashMap<String, (u32, Instant)>>,
+    transient_threshold: u32,
+}
+
+impl Default for RateLimitState {
+    fn default() -> Self {
+        Self::with_transient_threshold(DEFAULT_TRANSIENT_FAILURES_BEFORE_COOLDOWN)
+    }
 }
 
 impl RateLimitState {
+    /// `threshold` consecutive transient failures cool a key down; 0 or 1 = the old
+    /// behaviour (the first one does).
+    pub fn with_transient_threshold(threshold: u32) -> Self {
+        Self {
+            cooldowns: Arc::new(DashMap::new()),
+            transient: Arc::new(DashMap::new()),
+            transient_threshold: threshold.max(1),
+        }
+    }
+
     pub fn is_limited(&self, api_key_id: &str) -> bool {
         if let Some(entry) = self.cooldowns.get(api_key_id) {
             return Instant::now() < entry.0;
@@ -64,10 +100,33 @@ impl RateLimitState {
         false
     }
 
-    pub fn report_error(&self, api_key_id: &str, error_type: ErrorType) {
+    /// Record a failure. Returns true when the key was put on cooldown.
+    pub fn report_error(&self, api_key_id: &str, error_type: ErrorType) -> bool {
+        if error_type.is_transient() && self.transient_threshold > 1 {
+            let now = Instant::now();
+            let mut entry = self
+                .transient
+                .entry(api_key_id.to_string())
+                .or_insert((0, now));
+            if now.duration_since(entry.1) > TRANSIENT_WINDOW {
+                entry.0 = 0;
+            }
+            entry.0 += 1;
+            entry.1 = now;
+            if entry.0 < self.transient_threshold {
+                return false;
+            }
+            entry.0 = 0;
+        }
         let unblocked_at = Instant::now() + Duration::from_secs(error_type.cooldown_secs());
         self.cooldowns
             .insert(api_key_id.to_string(), (unblocked_at, error_type));
+        true
+    }
+
+    /// A successful call ends any run of transient failures.
+    pub fn report_success(&self, api_key_id: &str) {
+        self.transient.remove(api_key_id);
     }
 
     pub fn cooldown_remaining_ms(&self, api_key_id: &str) -> u64 {
@@ -220,6 +279,23 @@ impl UsageTracker {
         }
         let used = self.get_or_create(key_id).rps_count() as f64;
         ((limit - used) / limit).clamp(0.0, 1.0)
+    }
+
+    /// True when a limit configured on the key (rps / rpm / rpd) is fully used. The
+    /// selector skips such a key instead of sending a request the provider will answer
+    /// with a 429 (which then costs a 60 s cooldown) - and `rpd_limit` becomes a hard
+    /// daily cap, e.g. on an expensive last-resort provider. Counted in memory: a restart
+    /// starts the day's count over.
+    pub fn budget_exhausted(
+        &self,
+        key_id: &str,
+        rps_limit: Option<f64>,
+        rpm_limit: Option<i64>,
+        rpd_limit: Option<i64>,
+    ) -> bool {
+        self.rps_headroom(key_id, rps_limit) <= 0.0
+            || self.rpm_headroom(key_id, rpm_limit) <= 0.0
+            || self.rpd_headroom(key_id, rpd_limit) <= 0.0
     }
 
     /// Five-minute request count for traffic-balance scoring.
