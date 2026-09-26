@@ -442,3 +442,175 @@ fn is_transient(err: &ProviderError) -> bool {
     matches!(err, ProviderError::Timeout | ProviderError::Request(_))
         || matches!(err, ProviderError::Http { status, .. } if *status >= 500)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use providers::SearchOutput;
+    use proviz_core::{
+        language_profile::ProfileMatcher,
+        models::{ApiKey, Provider},
+        storage::StorageBackend,
+    };
+    use std::collections::HashMap as Map;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Answers `Empty` for its first `fail_first` calls, then one result.
+    struct FlakyProvider {
+        slug: &'static str,
+        fail_first: usize,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl SearchProvider for FlakyProvider {
+        fn slug(&self) -> &str {
+            self.slug
+        }
+        async fn search(&self, _q: SearchQuery<'_>) -> Result<SearchOutput, ProviderError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) < self.fail_first {
+                return Err(ProviderError::Empty);
+            }
+            Ok(SearchOutput::new(vec![SearchResult {
+                url: format!("https://{}.test/r", self.slug),
+                title: "t".into(),
+                snippet: "s".into(),
+                domain: format!("{}.test", self.slug),
+                rank: 0,
+                published_date: None,
+                language: None,
+                full_content: None,
+                extra_snippets: None,
+            }]))
+        }
+    }
+
+    /// (slug, key env var, tier priority)
+    async fn catalog_with(providers: &[(&str, &str, i64)]) -> CatalogStore {
+        let s = storage_sqlite::Storage::open_in_memory().unwrap();
+        for (slug, key_ref, priority) in providers {
+            std::env::set_var(key_ref, "k");
+            let p = s
+                .create_provider(Provider {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    slug: slug.to_string(),
+                    name: slug.to_string(),
+                    base_url: None,
+                    is_active: true,
+                    priority: *priority,
+                    avg_latency_ms: None,
+                    coverage_scores: Map::new(),
+                    notes: None,
+                    created_at: String::new(),
+                    no_cache: false,
+                })
+                .await
+                .unwrap();
+            s.create_api_key(ApiKey {
+                id: uuid::Uuid::new_v4().to_string(),
+                provider_id: p.id,
+                label: slug.to_string(),
+                key_ref: key_ref.to_string(),
+                is_active: true,
+                rps_limit: None,
+                rpm_limit: None,
+                rpd_limit: None,
+                last_used_at: None,
+                created_at: String::new(),
+                cost_per_mille: None,
+                currency: None,
+            })
+            .await
+            .unwrap();
+        }
+        let storage: Arc<dyn StorageBackend> = Arc::new(s);
+        CatalogStore::new(storage).await.unwrap()
+    }
+
+    fn params() -> SearchParams {
+        SearchParams {
+            query: "q".into(),
+            query_hash: "h".into(),
+            language: None,
+            country: None,
+            group_slug: None,
+            n: 5,
+            timeout_ms: 2000,
+            max_fallbacks: 3,
+            debug: false,
+            exclude_key_ids: vec![],
+            exclude_provider_slugs: vec![],
+            extra_snippets: false,
+            full_content: None,
+            max_snippets: None,
+            min_score: None,
+            require_enrichment: false,
+            include_domains: vec![],
+            exclude_domains: vec![],
+        }
+    }
+
+    async fn executor(staan_fail_first: usize) -> Executor {
+        let catalog =
+            catalog_with(&[("staan", "EXEC_TEST_STAAN", 1), ("exa", "EXEC_TEST_EXA", 2)]).await;
+        let mut map: HashMap<String, Arc<dyn SearchProvider>> = HashMap::new();
+        for (slug, fail_first) in [("staan", staan_fail_first), ("exa", 0)] {
+            map.insert(
+                slug.to_string(),
+                Arc::new(FlakyProvider {
+                    slug,
+                    fail_first,
+                    calls: AtomicUsize::new(0),
+                }),
+            );
+        }
+        let rl = RateLimitState::default();
+        let usage = UsageTracker::default();
+        let selector = Arc::new(Selector::new(
+            rl.clone(),
+            usage.clone(),
+            ProfileMatcher::new(vec![]),
+        ));
+        Executor::new(
+            catalog,
+            selector,
+            map,
+            rl,
+            usage,
+            PathBuf::from("/nonexistent"),
+            Arc::new(StatsTracker::new()),
+        )
+    }
+
+    #[tokio::test]
+    async fn one_failure_does_not_send_the_next_search_to_the_fallback() {
+        let ex = executor(1).await;
+        let first = ex.search(params()).await.unwrap();
+        assert_eq!(first.provider_slug, "exa"); // staan failed once -> fallback
+        let second = ex.search(params()).await.unwrap();
+        assert_eq!(
+            second.provider_slug, "staan",
+            "chain: {}",
+            second.fallback_chain
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_of_failures_still_cools_the_key_down() {
+        let ex = executor(3).await;
+        for _ in 0..3 {
+            let r = ex.search(params()).await.unwrap();
+            assert_eq!(r.fallback_chain, "staan:empty,exa:ok");
+        }
+        let fourth = ex.search(params()).await.unwrap();
+        assert_eq!(fourth.provider_slug, "exa");
+        // staan is on cooldown: not called at all (it would answer ok by now)
+        assert!(
+            !fourth.fallback_chain.contains("staan:ok")
+                && !fourth.fallback_chain.contains("staan:empty"),
+            "chain: {}",
+            fourth.fallback_chain
+        );
+    }
+}
