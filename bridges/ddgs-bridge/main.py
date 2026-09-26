@@ -45,7 +45,9 @@ _ADULT_DOMAIN_MARKERS = (
     "porn", "xxx", "xnxx", "xvideo", "xhamster", "redtube", "youporn", "bokep", "hentai",
     "spankbang", "eporner", "chaturbate", "stripchat", "brazzers", "tube8", "beeg", "motherless",
 )
-_ADULT_DOMAIN_EXCEPTIONS = ("pornic",)  # Pornic is a French town
+# Pornic / Pornichet (French towns), jeuxvideo.com ("jeu-xvideo").
+_ADULT_DOMAIN_EXCEPTIONS = ("pornic", "jeuxvideo")
+_ADULT_ALLOWED_PARENTS = ("fandom.com",)  # xxx.fandom.com = the film's wiki
 _ADULT_TLDS = {"xxx", "porn", "sex", "adult"}
 _ADULT_TEXT_DECISIVE = {"xnxx", "xvideos", "xvideo", "xhamster", "youporn", "redtube", "bokep", "ngentot"}
 _ADULT_TEXT_EXPLICIT = {
@@ -62,11 +64,14 @@ def _host(url: str) -> str:
 
 
 def is_adult(url: str, title: str, snippet: str) -> bool:
-    labels = [label for label in _host(url).split(".") if label]
+    host = _host(url)
+    if any(host == p or host.endswith("." + p) for p in _ADULT_ALLOWED_PARENTS):
+        return False
+    labels = [label for label in host.split(".") if label]
     if len(labels) >= 2 and labels[-1] in _ADULT_TLDS:
         return True
     for label in labels:
-        if any(e in label for e in _ADULT_DOMAIN_EXCEPTIONS):
+        if label.startswith("xn--") or any(e in label for e in _ADULT_DOMAIN_EXCEPTIONS):
             continue
         if any(m in label for m in _ADULT_DOMAIN_MARKERS):
             return True
