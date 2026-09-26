@@ -358,3 +358,76 @@ fn test_resolve_key_from_file() {
     let result = resolve_key("MY_KEY", dir.path()).unwrap();
     assert_eq!(result, "file-secret-value");
 }
+
+// ---------------------------------------------------------------------------
+// Transient failures only cool a key down after a run of them
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_single_transient_failure_does_not_cool_down() {
+    let rl = RateLimitState::default(); // threshold 3
+    for et in [ErrorType::Timeout, ErrorType::Error] {
+        assert!(!rl.report_error("staan", et));
+        assert!(!rl.is_limited("staan"));
+    }
+    assert!(rl.report_error("staan", ErrorType::Empty)); // 3rd in a row
+    assert!(rl.is_limited("staan"));
+}
+
+#[test]
+fn test_success_resets_transient_run() {
+    let rl = RateLimitState::default();
+    rl.report_error("staan", ErrorType::Error);
+    rl.report_error("staan", ErrorType::Error);
+    rl.report_success("staan");
+    assert!(!rl.report_error("staan", ErrorType::Error));
+    assert!(!rl.report_error("staan", ErrorType::Error));
+    assert!(!rl.is_limited("staan"));
+}
+
+#[test]
+fn test_explicit_signals_still_cool_down_at_once() {
+    let rl = RateLimitState::default();
+    assert!(rl.report_error("k1", ErrorType::Rpm));
+    assert!(rl.is_limited("k1"));
+    assert!(rl.report_error("k2", ErrorType::Auth));
+    assert!(rl.is_limited("k2"));
+}
+
+#[test]
+fn test_threshold_one_keeps_old_behaviour() {
+    let rl = RateLimitState::with_transient_threshold(1);
+    assert!(rl.report_error("k", ErrorType::Timeout));
+    assert!(rl.is_limited("k"));
+}
+
+#[test]
+fn test_budget_exhausted_only_with_configured_limit() {
+    let ut = UsageTracker::default();
+    assert!(!ut.budget_exhausted("exa", None, None, None));
+    ut.reserve("exa");
+    ut.reserve("exa");
+    assert!(!ut.budget_exhausted("exa", None, None, Some(3)));
+    ut.reserve("exa");
+    assert!(ut.budget_exhausted("exa", None, None, Some(3))); // daily cap reached
+    assert!(ut.budget_exhausted("exa", Some(2.0), None, None)); // 3 this second > 2 rps
+}
+
+#[test]
+fn test_selector_skips_key_whose_daily_cap_is_used() {
+    let usage = UsageTracker::default();
+    let sel = Selector::new(
+        RateLimitState::default(),
+        usage.clone(),
+        ProfileMatcher::new(vec![]),
+    );
+    let mut exa = make_candidate("exa", "exa-key", 0, true);
+    exa.api_key.rpd_limit = Some(1);
+    let pool = vec![exa];
+    let req = SelectRequest::default();
+    assert!(sel.select(&pool, &req, &[], false).candidate.is_some());
+    usage.reserve("exa-key");
+    let out = sel.select(&pool, &req, &[], false);
+    assert!(out.candidate.is_none());
+    assert_eq!(out.decisions[0].reason.as_deref(), Some("budget_exhausted"));
+}

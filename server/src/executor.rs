@@ -12,7 +12,7 @@ use proviz_core::{
     rate_limit::{ErrorType, RateLimitState, UsageTracker},
     selector::{DebugDecision, SelectRequest, Selector},
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{catalog::CatalogStore, stats::StatsTracker};
@@ -216,6 +216,7 @@ impl Executor {
 
             match result {
                 Ok(output) => {
+                    self.rate_limit.report_success(&candidate.api_key.id);
                     let duration_ms = start.elapsed().as_millis() as u64;
                     // Use the effective slug (e.g. "ddg-yandex") when the provider
                     // reports one; otherwise fall back to the DB slug.
@@ -278,7 +279,9 @@ impl Executor {
                 }
                 Err(e) => {
                     let error_type = e.error_type_str();
-                    debug!(
+                    // info, not debug: the provider's own answer (status, message) is
+                    // the only way to tell why a paid key keeps failing.
+                    info!(
                         provider = candidate.provider.slug,
                         key_ref = candidate.api_key.key_ref,
                         error_type,
@@ -302,7 +305,15 @@ impl Executor {
                         _ => ErrorType::Error,
                     };
 
-                    self.rate_limit.report_error(&candidate.api_key.id, et);
+                    if self.rate_limit.report_error(&candidate.api_key.id, et) {
+                        warn!(
+                            provider = candidate.provider.slug,
+                            key_ref = candidate.api_key.key_ref,
+                            error_type,
+                            cooldown_secs = et.cooldown_secs(),
+                            "key cooled down"
+                        );
+                    }
 
                     let storage = Arc::clone(self.catalog.storage());
                     let kid = candidate.api_key.id.clone();

@@ -261,6 +261,10 @@ impl ContentExecutor {
                 providers_used.push(slug.clone());
             }
 
+            if hard_err.is_none() && got_any {
+                self.rate_limit.report_success(&candidate.api_key.id);
+            }
+
             if let Some(e) = hard_err {
                 let et = e.error_type_str();
                 chain_parts.push(format!("{slug}:{et}"));

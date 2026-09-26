@@ -18,6 +18,8 @@ pub struct Config {
     /// happen to surface the same URL. Mirrors rtfc's own 6h URL-content cache.
     pub doc_cache_ttl_secs: u64,
     pub max_fallbacks: usize,
+    /// Consecutive transient failures (timeout / 5xx / empty) before a key is cooled down.
+    pub transient_failures_before_cooldown: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -73,6 +75,12 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(3);
 
+        let transient_failures_before_cooldown =
+            std::env::var("TRANSIENT_FAILURES_BEFORE_COOLDOWN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(proviz_core::rate_limit::DEFAULT_TRANSIENT_FAILURES_BEFORE_COOLDOWN);
+
         Self {
             port,
             database_url,
@@ -85,6 +93,7 @@ impl Config {
             cache_ttl_secs,
             doc_cache_ttl_secs,
             max_fallbacks,
+            transient_failures_before_cooldown,
         }
     }
 }
