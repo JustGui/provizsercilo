@@ -68,7 +68,7 @@ services:
       - "8001:8001"
     environment:
       PORT: "8001"
-      SAFESEARCH: moderate
+      SAFESEARCH: "on"
       BACKEND_ORDER: ${BACKEND_ORDER:-yandex,mojeek,startpage,yahoo,google,duckduckgo,brave}
     restart: unless-stopped
 
