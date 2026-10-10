@@ -101,6 +101,10 @@ impl SearchProvider for StaanProvider {
         "staan"
     }
 
+    fn supports_include_domains(&self) -> bool {
+        true
+    }
+
     fn supports_full_content(&self) -> bool {
         true
     }

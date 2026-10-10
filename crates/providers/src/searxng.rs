@@ -58,6 +58,7 @@ impl SearchProvider for SearxngProvider {
             n,
             language,
             api_key,
+            freshness,
             ..
         } = q;
         let base = api_key.trim_end_matches('/');
@@ -70,6 +71,11 @@ impl SearchProvider for SearxngProvider {
 
         if let Some(lang) = language {
             req = req.query(&[("language", lang)]);
+        }
+        // SearXNG only takes a relative window (`time_range`); engines that cannot apply
+        // it are skipped by SearXNG for that request.
+        if let Some(r) = freshness.and_then(|f| f.as_recency(crate::operators::today())) {
+            req = req.query(&[("time_range", r.as_str())]);
         }
 
         let resp = req.send().await?;

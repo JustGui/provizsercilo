@@ -150,6 +150,7 @@ def search(
     region: Optional[str] = Query(None, description="DDG region code override (e.g. 'fr-fr')"),
     safesearch: str = Query(os.getenv("SAFESEARCH", "on")),
     backend: Optional[str] = Query(None, description="DDGS backend: duckduckgo, yahoo, brave, google, yandex, mojeek, startpage"),
+    timelimit: Optional[str] = Query(None, description="Publication window: d, w, m or y (ignored by backends without a date filter)"),
 ):
     """
     Execute a DDG web search and return normalised results.
@@ -168,6 +169,8 @@ def search(
         "safesearch": safesearch,
         "region": region if region else _ddg_region(language, country),
     }
+    if timelimit in ("d", "w", "m", "y"):
+        kwargs["timelimit"] = timelimit
 
     if backend:
         # Caller specified a backend — single attempt, no retry.

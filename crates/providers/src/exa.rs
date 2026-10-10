@@ -28,6 +28,10 @@ struct ExaRequest<'a> {
     #[serde(rename = "numResults")]
     num_results: usize,
     contents: ExaContents,
+    #[serde(rename = "startPublishedDate", skip_serializing_if = "Option::is_none")]
+    start_published_date: Option<String>,
+    #[serde(rename = "endPublishedDate", skip_serializing_if = "Option::is_none")]
+    end_published_date: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -56,11 +60,17 @@ impl SearchProvider for ExaProvider {
     }
 
     async fn search(&self, q: SearchQuery<'_>) -> Result<SearchOutput, ProviderError> {
+        let (from, to) = q
+            .freshness
+            .map(|f| f.range(crate::operators::today()))
+            .unwrap_or((None, None));
         let body = ExaRequest {
             query: q.query,
             search_type: "auto",
             num_results: q.n,
             contents: ExaContents { highlights: true },
+            start_published_date: from.map(|d| format!("{d}T00:00:00.000Z")),
+            end_published_date: to.map(|d| format!("{d}T23:59:59.999Z")),
         };
 
         let resp = self
