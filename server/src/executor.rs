@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use providers::{ProviderError, SearchProvider, SearchQuery};
+use providers::{operators, ProviderError, SearchProvider, SearchQuery};
 use proviz_core::{
     key_resolver::{resolve_key, ResolveError},
     models::{Candidate, SearchLog, SearchResult},
@@ -38,6 +38,8 @@ pub struct SearchParams {
     pub require_enrichment: bool,
     pub include_domains: Vec<String>,
     pub exclude_domains: Vec<String>,
+    /// Publication window, mapped by each adapter that has a date parameter.
+    pub freshness: operators::Freshness,
 }
 
 impl SearchParams {
@@ -371,6 +373,32 @@ impl Executor {
                 },
             })?;
 
+        // Domain restriction on every tier: a provider with a structured include/exclude
+        // field gets the bare hosts; every other one gets `site:` operators in the query
+        // text. Either way the answer is filtered to the requested domains (a path entry
+        // like `lemonde.fr/les-decodeurs` is only expressible that way), and an answer
+        // that had results but none inside them counts as empty, so the chain moves on.
+        let restricted = !params.include_domains.is_empty() || !params.exclude_domains.is_empty();
+        let native_domains = provider.supports_include_domains();
+        let query_text = if restricted && !native_domains {
+            operators::with_site_operators(
+                &params.query,
+                &params.include_domains,
+                &params.exclude_domains,
+            )
+        } else {
+            params.query.clone()
+        };
+        let (include_hosts, exclude_hosts) = if restricted && native_domains {
+            (
+                operators::hosts(&params.include_domains),
+                operators::hosts(&params.exclude_domains),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let freshness = (!params.freshness.is_empty()).then_some(&params.freshness);
+
         // A transient blip (timeout, network error, 5xx) gets one short-backoff
         // retry against the *same* candidate before it's marked down and
         // excluded from the rest of this call's fallback chain — avoids
@@ -393,7 +421,7 @@ impl Executor {
             self.usage.reserve(&candidate.api_key.id);
 
             let query = SearchQuery {
-                query: &params.query,
+                query: &query_text,
                 n: params.n,
                 language: params.language.as_deref(),
                 country: params.country.as_deref(),
@@ -402,8 +430,9 @@ impl Executor {
                 full_content: params.full_content.as_deref(),
                 max_snippets: params.max_snippets,
                 min_score: params.min_score,
-                include_domains: &params.include_domains,
-                exclude_domains: &params.exclude_domains,
+                include_domains: &include_hosts,
+                exclude_domains: &exclude_hosts,
+                freshness,
             };
             let result = tokio::time::timeout(
                 Duration::from_millis(params.timeout_ms),
@@ -420,7 +449,24 @@ impl Executor {
             });
 
             let err = match result {
-                Ok(Ok(output)) => return Ok(output),
+                Ok(Ok(output)) if !restricted => return Ok(output),
+                Ok(Ok(mut output)) => {
+                    let before = output.results.len();
+                    output.results = operators::filter_results(
+                        output.results,
+                        &params.include_domains,
+                        &params.exclude_domains,
+                    );
+                    if output.results.is_empty() && before > 0 {
+                        debug!(
+                            provider = candidate.provider.slug,
+                            before, "no result inside the requested domains"
+                        );
+                        ProviderError::Empty
+                    } else {
+                        return Ok(output);
+                    }
+                }
                 Ok(Err(e)) => e,
                 Err(_elapsed) => ProviderError::Timeout,
             };
@@ -548,6 +594,7 @@ mod tests {
             require_enrichment: false,
             include_domains: vec![],
             exclude_domains: vec![],
+            freshness: Default::default(),
         }
     }
 
@@ -612,5 +659,128 @@ mod tests {
             "chain: {}",
             fourth.fallback_chain
         );
+    }
+    /// Free-engine stand-in: ignores `include_domains`, records the query text it was
+    /// sent, answers pages on and off the requested domains.
+    struct IgnoresDomains {
+        native: bool,
+        seen: std::sync::Mutex<Vec<(String, Vec<String>, Option<operators::Freshness>)>>,
+    }
+
+    #[async_trait]
+    impl SearchProvider for IgnoresDomains {
+        fn slug(&self) -> &str {
+            "stub"
+        }
+        fn supports_include_domains(&self) -> bool {
+            self.native
+        }
+        async fn search(&self, q: SearchQuery<'_>) -> Result<SearchOutput, ProviderError> {
+            self.seen.lock().unwrap().push((
+                q.query.to_string(),
+                q.include_domains.to_vec(),
+                q.freshness.cloned(),
+            ));
+            let r = |url: &str, rank| SearchResult {
+                url: url.into(),
+                title: "t".into(),
+                snippet: "s".into(),
+                domain: String::new(),
+                rank,
+                published_date: None,
+                language: None,
+                full_content: None,
+                extra_snippets: None,
+            };
+            Ok(SearchOutput::new(vec![
+                r("https://www.latimes.com/a", 0),
+                r("https://www.insee.fr/fr/statistiques/1", 1),
+                r("https://www.lemonde.fr/les-decodeurs/article/x.html", 2),
+                r("https://www.lemonde.fr/sport/x.html", 3),
+            ]))
+        }
+    }
+
+    async fn stub_executor(native: bool) -> (Executor, Arc<IgnoresDomains>) {
+        let catalog = catalog_with(&[("stub", "EXEC_TEST_STUB", 1)]).await;
+        let stub = Arc::new(IgnoresDomains {
+            native,
+            seen: Default::default(),
+        });
+        let mut map: HashMap<String, Arc<dyn SearchProvider>> = HashMap::new();
+        map.insert("stub".into(), stub.clone());
+        let rl = RateLimitState::default();
+        let usage = UsageTracker::default();
+        let selector = Arc::new(Selector::new(
+            rl.clone(),
+            usage.clone(),
+            ProfileMatcher::new(vec![]),
+        ));
+        (
+            Executor::new(
+                catalog,
+                selector,
+                map,
+                rl,
+                usage,
+                PathBuf::from("/nonexistent"),
+                Arc::new(StatsTracker::new()),
+            ),
+            stub,
+        )
+    }
+
+    #[tokio::test]
+    async fn include_domains_become_site_operators_for_an_engine_that_ignores_them() {
+        let (ex, stub) = stub_executor(false).await;
+        let mut p = params();
+        p.query = "taux de croissance 1962".into();
+        p.include_domains = vec!["insee.fr".into(), "lemonde.fr/les-decodeurs".into()];
+        p.freshness = operators::Freshness::from_request(Some("year"), None, None);
+        let out = ex.search(p).await.unwrap();
+        let urls: Vec<&str> = out.results.iter().map(|r| r.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://www.insee.fr/fr/statistiques/1",
+                "https://www.lemonde.fr/les-decodeurs/article/x.html"
+            ]
+        );
+        let seen = stub.seen.lock().unwrap();
+        assert_eq!(
+            seen[0].0,
+            "taux de croissance 1962 (site:insee.fr OR site:lemonde.fr)"
+        );
+        assert!(seen[0].1.is_empty(), "the engine gets no structured list");
+        assert_eq!(
+            seen[0].2.as_ref().and_then(|f| f.recency),
+            Some(operators::Recency::Year)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_native_provider_gets_hosts_and_the_plain_query() {
+        let (ex, stub) = stub_executor(true).await;
+        let mut p = params();
+        p.query = "élèves 6e lire".into();
+        p.include_domains = vec!["lemonde.fr/les-decodeurs".into()];
+        let out = ex.search(p).await.unwrap();
+        assert_eq!(
+            out.results.len(),
+            1,
+            "the path is still enforced by the filter"
+        );
+        let seen = stub.seen.lock().unwrap();
+        assert_eq!(seen[0].0, "élèves 6e lire");
+        assert_eq!(seen[0].1, vec!["lemonde.fr".to_string()]);
+        assert!(seen[0].2.is_none());
+    }
+
+    #[tokio::test]
+    async fn nothing_inside_the_domains_is_an_empty_answer() {
+        let (ex, _) = stub_executor(false).await;
+        let mut p = params();
+        p.include_domains = vec!["ined.fr".into()];
+        assert!(ex.search(p).await.is_err());
     }
 }

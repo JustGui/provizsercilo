@@ -8,6 +8,7 @@ use cache::{CacheEntry, QueryCache};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
+use providers::operators::Freshness;
 use proviz_core::{models::SearchResult, selector::DebugDecision};
 
 use crate::{
@@ -55,6 +56,13 @@ pub struct SearchRequest {
     pub include_domains: Vec<String>,
     #[serde(default)]
     pub exclude_domains: Vec<String>,
+    /// Relative publication window: "day" | "week" | "month" | "year".
+    pub freshness: Option<String>,
+    /// Explicit publication range, `YYYY-MM-DD` (either bound optional). Takes precedence
+    /// over `freshness` for providers with a date-range parameter; window-only engines get
+    /// the smallest window covering it (none for a historical range).
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
 }
 
 fn default_n() -> usize {
@@ -65,21 +73,35 @@ fn default_require_enrichment() -> bool {
     true
 }
 
-/// Folds every enrichment-affecting field into one discriminator string so the
-/// per-query SERP cache never crosses a plain request with an enriched one.
-fn enrichment_cache_key(req: &SearchRequest) -> String {
-    if !req.extra_snippets && req.full_content.is_none() {
-        return String::new();
+/// Folds every result-affecting field beyond query/language/country/group into one
+/// discriminator string so the per-query SERP cache never crosses a plain request with
+/// an enriched, domain-restricted or date-restricted one. A plain request keeps the
+/// empty key (and so its existing cache entries).
+fn enrichment_cache_key(req: &SearchRequest, freshness: &Freshness) -> String {
+    let mut key = String::new();
+    if req.extra_snippets || req.full_content.is_some() {
+        key = format!(
+            "es={}&fc={}&ms={}&mn={}&inc={}&exc={}",
+            req.extra_snippets,
+            req.full_content.as_deref().unwrap_or(""),
+            req.max_snippets.map(|v| v.to_string()).unwrap_or_default(),
+            req.min_score.map(|v| v.to_string()).unwrap_or_default(),
+            req.include_domains.join(","),
+            req.exclude_domains.join(","),
+        );
+    } else if !req.include_domains.is_empty() || !req.exclude_domains.is_empty() {
+        // Before: a domain-restricted plain search shared the unrestricted one's entry.
+        key = format!(
+            "inc={}&exc={}",
+            req.include_domains.join(","),
+            req.exclude_domains.join(",")
+        );
     }
-    format!(
-        "es={}&fc={}&ms={}&mn={}&inc={}&exc={}",
-        req.extra_snippets,
-        req.full_content.as_deref().unwrap_or(""),
-        req.max_snippets.map(|v| v.to_string()).unwrap_or_default(),
-        req.min_score.map(|v| v.to_string()).unwrap_or_default(),
-        req.include_domains.join(","),
-        req.exclude_domains.join(","),
-    )
+    let f = freshness.cache_key();
+    if !f.is_empty() {
+        key.push_str(&format!("&fr={f}"));
+    }
+    key
 }
 
 #[derive(Serialize)]
@@ -113,7 +135,12 @@ pub async fn handle_search(
     let default_timeout_ms = if wants_enrichment { 10_000 } else { 8_000 };
     let timeout_ms = req.timeout_ms.unwrap_or(default_timeout_ms);
     let max_fallbacks = req.max_fallbacks.unwrap_or(state.config.max_fallbacks);
-    let enrichment_key = enrichment_cache_key(&req);
+    let freshness = Freshness::from_request(
+        req.freshness.as_deref(),
+        req.date_from.as_deref(),
+        req.date_to.as_deref(),
+    );
+    let enrichment_key = enrichment_cache_key(&req, &freshness);
 
     // Determine whether all providers in the requested group are no-cache.
     // If so, skip the cache read (and also the write, handled below).
@@ -183,6 +210,7 @@ pub async fn handle_search(
             require_enrichment: req.require_enrichment,
             include_domains: req.include_domains.clone(),
             exclude_domains: req.exclude_domains.clone(),
+            freshness,
         })
         .await?;
 

@@ -3,6 +3,7 @@ pub mod ddg_bridge;
 pub mod decodo;
 pub mod exa;
 pub mod mojeek;
+pub mod operators;
 pub mod parallel;
 pub mod searxng;
 pub mod serper;
@@ -78,9 +79,13 @@ impl ProviderError {
 
 /// Parameters for one search call. `api_key` is the resolved key value, or the
 /// service URL for URL-based providers (SearXNG, DDG bridge). The enrichment
-/// fields (`extra_snippets`, `full_content`, `max_snippets`, `min_score`,
-/// `include_domains`, `exclude_domains`) are hints - a provider that doesn't
-/// support one just ignores it; see `SearchProvider::supports_*`.
+/// fields (`extra_snippets`, `full_content`, `max_snippets`, `min_score`) are hints -
+/// a provider that doesn't support one just ignores it; see `SearchProvider::supports_*`.
+///
+/// `include_domains` / `exclude_domains` reach the adapter only when it
+/// `supports_include_domains` (hosts only); for every other provider the executor has
+/// already rewritten them into `site:` operators in `query` and filters the answer
+/// (see `operators`). `freshness` is mapped by each adapter that has a date parameter.
 pub struct SearchQuery<'a> {
     pub query: &'a str,
     pub n: usize,
@@ -94,6 +99,7 @@ pub struct SearchQuery<'a> {
     pub min_score: Option<f64>,
     pub include_domains: &'a [String],
     pub exclude_domains: &'a [String],
+    pub freshness: Option<&'a operators::Freshness>,
 }
 
 /// Common interface for all search engine adapters.
@@ -114,6 +120,12 @@ pub trait SearchProvider: Send + Sync {
 
     /// True if this provider can fill `SearchResult::extra_snippets` on request.
     fn supports_extra_snippets(&self) -> bool {
+        false
+    }
+
+    /// True if the provider API restricts results to `include_domains` itself. False
+    /// (the free engines) → the executor writes `site:` operators into the query.
+    fn supports_include_domains(&self) -> bool {
         false
     }
 
