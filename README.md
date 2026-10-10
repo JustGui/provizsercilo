@@ -112,6 +112,21 @@ Optional fields — fetch and rerank result pages in the same call instead of sc
 
 Each result gains `full_content: {text, format, length}` and/or `extra_snippets: [{chunk, score}]` when populated. A page's enriched content is cached by URL (`DOC_CACHE_TTL_SECS`) independently of the query, so a different query surfacing the same page doesn't re-fetch it.
 
+#### Domain and date restriction
+
+```json
+{
+  "query": "taux de chômage des jeunes",
+  "include_domains": ["insee.fr", "dares.travail-emploi.gouv.fr", "lemonde.fr/les-decodeurs"],
+  "exclude_domains": [],
+  "freshness": "year",          // "day" | "week" | "month" | "year"
+  "date_from": "2026-01-01",    // optional explicit range, YYYY-MM-DD
+  "date_to": "2026-10-10"
+}
+```
+
+`include_domains` works on every provider: engines without a native field (SearXNG, the DDG bridge, Brave, Mojeek, Serper, Exa) get it as OR-ed `site:` operators (at most 6) and every answer is filtered to the domains. Freshness is mapped per provider. See [docs/search-operators.md](docs/search-operators.md) for the mapping and the measured operator support of each free engine.
+
 ### Page content extraction
 
 Standalone endpoint for pulling clean page bodies — hand it a batch of URLs, it
