@@ -296,31 +296,30 @@ impl SearchProvider for YouComProvider {
             None
         };
 
-        let body =
-            SearchRequest {
-                query: q.query,
-                count: q.n.clamp(1, 100),
-                country: q.country,
-                language: q.language,
-                include_domains: q.include_domains,
-                exclude_domains: q.exclude_domains,
-                freshness: q.freshness.and_then(|f| {
-                    if f.from.is_none() && f.to.is_none() {
-                        f.recency.map(|r| r.as_str().to_string())
-                    } else {
-                        let today = crate::operators::today();
-                        let (from, to) = f.range(today);
-                        Some(format!(
+        let body = SearchRequest {
+            query: q.query,
+            count: q.n.clamp(1, 100),
+            country: q.country,
+            language: q.language,
+            include_domains: q.include_domains,
+            exclude_domains: q.exclude_domains,
+            freshness: q.freshness.and_then(|f| {
+                if f.from.is_none() && f.to.is_none() {
+                    f.recency.map(|r| r.as_str().to_string())
+                } else {
+                    let today = crate::operators::today();
+                    let (from, to) = f.range(today);
+                    Some(format!(
                             "{}to{}",
                             from.unwrap_or_else(
                                 || chrono::NaiveDate::from_ymd_opt(1990, 1, 1).unwrap()
                             ),
                             to.unwrap_or(today)
                         ))
-                    }
-                }),
-                extraction,
-            };
+                }
+            }),
+            extraction,
+        };
 
         let resp = self
             .client
