@@ -662,9 +662,12 @@ mod tests {
     }
     /// Free-engine stand-in: ignores `include_domains`, records the query text it was
     /// sent, answers pages on and off the requested domains.
+    /// (query text, include_domains, freshness) of one call.
+    type SeenCall = (String, Vec<String>, Option<operators::Freshness>);
+
     struct IgnoresDomains {
         native: bool,
-        seen: std::sync::Mutex<Vec<(String, Vec<String>, Option<operators::Freshness>)>>,
+        seen: std::sync::Mutex<Vec<SeenCall>>,
     }
 
     #[async_trait]
