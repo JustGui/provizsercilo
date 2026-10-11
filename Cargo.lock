@@ -1247,6 +1247,7 @@ name = "providers"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "proviz-core",
  "reqwest",
  "serde",

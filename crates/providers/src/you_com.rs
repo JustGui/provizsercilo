@@ -44,6 +44,9 @@ struct SearchRequest<'a> {
     include_domains: &'a [String],
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     exclude_domains: &'a [String],
+    /// `day|week|month|year` or `YYYY-MM-DDtoYYYY-MM-DD`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    freshness: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     extraction: Option<Extraction>,
 }
@@ -259,6 +262,10 @@ impl SearchProvider for YouComProvider {
         "you-com"
     }
 
+    fn supports_include_domains(&self) -> bool {
+        true
+    }
+
     fn supports_full_content(&self) -> bool {
         true
     }
@@ -296,6 +303,21 @@ impl SearchProvider for YouComProvider {
             language: q.language,
             include_domains: q.include_domains,
             exclude_domains: q.exclude_domains,
+            freshness: q.freshness.and_then(|f| {
+                if f.from.is_none() && f.to.is_none() {
+                    f.recency.map(|r| r.as_str().to_string())
+                } else {
+                    let today = crate::operators::today();
+                    let (from, to) = f.range(today);
+                    Some(format!(
+                            "{}to{}",
+                            from.unwrap_or_else(
+                                || chrono::NaiveDate::from_ymd_opt(1990, 1, 1).unwrap()
+                            ),
+                            to.unwrap_or(today)
+                        ))
+                }
+            }),
             extraction,
         };
 

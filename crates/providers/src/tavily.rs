@@ -34,6 +34,12 @@ struct TavilyRequest<'a> {
     include_domains: &'a [String],
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     exclude_domains: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    time_range: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_date: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -60,6 +66,10 @@ impl SearchProvider for TavilyProvider {
         true
     }
 
+    fn supports_include_domains(&self) -> bool {
+        true
+    }
+
     // Tavily's `content` field is a single NLP summary (basic) or a concatenation
     // of `<chunk> [...] <chunk>` (advanced) with only one page-level `score`, not
     // a per-chunk score - doesn't fit the discrete {chunk,score}[] shape we need.
@@ -79,6 +89,18 @@ impl SearchProvider for TavilyProvider {
         } else {
             "basic"
         };
+        // A relative window goes as `time_range`, an explicit range as start/end dates.
+        let explicit = q
+            .freshness
+            .is_some_and(|f| f.from.is_some() || f.to.is_some());
+        let relative = q.freshness.filter(|_| !explicit).and_then(|f| f.recency);
+        let (from, to) = if explicit {
+            q.freshness
+                .map(|f| f.range(crate::operators::today()))
+                .unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
         let body = TavilyRequest {
             api_key: q.api_key,
             query: q.query,
@@ -88,6 +110,9 @@ impl SearchProvider for TavilyProvider {
             include_raw_content: raw_format,
             include_domains: q.include_domains,
             exclude_domains: q.exclude_domains,
+            time_range: relative.map(|r| r.as_str()),
+            start_date: from.map(|d| d.to_string()),
+            end_date: to.map(|d| d.to_string()),
         };
 
         let resp = self

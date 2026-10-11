@@ -76,6 +76,7 @@ impl SearchProvider for DdgBridgeProvider {
             language,
             country,
             api_key,
+            freshness,
             ..
         } = q;
         let base = api_key.trim_end_matches('/');
@@ -89,6 +90,10 @@ impl SearchProvider for DdgBridgeProvider {
         }
         if let Some(c) = country {
             req = req.query(&[("country", c)]);
+        }
+        // ddgs `timelimit`: d/w/m/y (honoured by the backends that have a date filter).
+        if let Some(r) = freshness.and_then(|f| f.as_recency(crate::operators::today())) {
+            req = req.query(&[("timelimit", &r.as_str()[..1])]);
         }
         if let Some(backend) = &self.backend {
             req = req.query(&[("backend", backend.as_str())]);

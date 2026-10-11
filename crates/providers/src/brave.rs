@@ -52,6 +52,7 @@ impl SearchProvider for BraveProvider {
             language,
             country,
             api_key,
+            freshness,
             ..
         } = q;
         let mut req = self
@@ -67,6 +68,9 @@ impl SearchProvider for BraveProvider {
         }
         if let Some(cty) = country {
             req = req.query(&[("country", cty)]);
+        }
+        if let Some(f) = freshness.and_then(brave_freshness) {
+            req = req.query(&[("freshness", f.as_str())]);
         }
 
         let resp = req.send().await?;
@@ -119,5 +123,49 @@ impl SearchProvider for BraveProvider {
             return Err(ProviderError::Empty);
         }
         Ok(SearchOutput::new(results))
+    }
+}
+
+/// Brave `freshness`: `pd`/`pw`/`pm`/`py`, or `YYYY-MM-DDtoYYYY-MM-DD` for a date range.
+fn brave_freshness(f: &crate::operators::Freshness) -> Option<String> {
+    use crate::operators::Recency;
+    if f.from.is_none() && f.to.is_none() {
+        return f.recency.map(|r| {
+            match r {
+                Recency::Day => "pd",
+                Recency::Week => "pw",
+                Recency::Month => "pm",
+                Recency::Year => "py",
+            }
+            .to_string()
+        });
+    }
+    let today = crate::operators::today();
+    let (from, to) = f.range(today);
+    let from = from.unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(1990, 1, 1).unwrap());
+    Some(format!("{}to{}", from, to.unwrap_or(today)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operators::Freshness;
+
+    #[test]
+    fn freshness_maps_to_brave_codes_and_ranges() {
+        assert_eq!(
+            brave_freshness(&Freshness::from_request(Some("week"), None, None)).as_deref(),
+            Some("pw")
+        );
+        assert_eq!(
+            brave_freshness(&Freshness::from_request(
+                None,
+                Some("1962-01-01"),
+                Some("1963-12-31")
+            ))
+            .as_deref(),
+            Some("1962-01-01to1963-12-31")
+        );
+        assert_eq!(brave_freshness(&Freshness::default()), None);
     }
 }
