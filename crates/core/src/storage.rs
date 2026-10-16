@@ -51,6 +51,7 @@ pub trait StorageBackend: Send + Sync {
         rpd_limit: Option<Option<i64>>,
         cost_per_mille: Option<Option<f64>>,
         currency: Option<Option<String>>,
+        max_queue_ms: Option<Option<i64>>,
     ) -> Result<(), StorageError>;
     async fn soft_delete_api_key(&self, id: &str) -> Result<(), StorageError>;
     async fn touch_api_key(&self, id: &str) -> Result<(), StorageError>;

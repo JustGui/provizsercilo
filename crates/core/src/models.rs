@@ -27,12 +27,29 @@ pub struct ApiKey {
     pub rps_limit: Option<f64>,
     pub rpm_limit: Option<i64>,
     pub rpd_limit: Option<i64>,
+    /// NULL/zero disables pacing and preserves immediate budget skips.
+    #[serde(default)]
+    pub max_queue_ms: Option<i64>,
     pub last_used_at: Option<String>,
     pub created_at: String,
     /// Subscription cost per 1000 requests, in `currency`. `None` = cost unknown/free.
     pub cost_per_mille: Option<f64>,
     /// ISO 4217 currency code (e.g. "USD", "EUR") for `cost_per_mille`.
     pub currency: Option<String>,
+}
+
+impl ApiKey {
+    /// Tightest positive per-second rate; daily caps are enforced separately.
+    pub fn pacing_rate(&self) -> Option<f64> {
+        if self.max_queue_ms.unwrap_or(0) <= 0 {
+            return None;
+        }
+        self.rps_limit
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .into_iter()
+            .chain(self.rpm_limit.filter(|r| *r > 0).map(|r| r as f64 / 60.0))
+            .reduce(f64::min)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

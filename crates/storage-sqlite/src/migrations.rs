@@ -85,6 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_search_log_requested ON search_log(requested_at);
 const ALTER_STATEMENTS: &[&str] = &[
     "ALTER TABLE api_keys ADD COLUMN cost_per_mille REAL",
     "ALTER TABLE api_keys ADD COLUMN currency TEXT",
+    "ALTER TABLE api_keys ADD COLUMN max_queue_ms BIGINT",
     "ALTER TABLE search_log ADD COLUMN cost REAL",
     "ALTER TABLE search_log ADD COLUMN currency TEXT",
 ];

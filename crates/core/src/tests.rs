@@ -34,6 +34,7 @@ fn make_key(id: &str, provider_id: &str, active: bool) -> ApiKey {
         label: id.to_string(),
         key_ref: format!("{id}_REF"),
         is_active: active,
+        max_queue_ms: None,
         rps_limit: None,
         rpm_limit: None,
         rpd_limit: None,

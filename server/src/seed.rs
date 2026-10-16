@@ -247,6 +247,7 @@ pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
                 label: format!("{}-{}", slug, i + 1),
                 key_ref: key_ref.clone(),
                 is_active: true,
+                max_queue_ms: None,
                 rps_limit: None,
                 rpm_limit: None,
                 rpd_limit: None,

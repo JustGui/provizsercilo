@@ -33,6 +33,7 @@ fn make_key(provider_id: &str, label: &str) -> ApiKey {
         label: label.to_string(),
         key_ref: format!("{label}_REF"),
         is_active: true,
+        max_queue_ms: None,
         rps_limit: None,
         rpm_limit: Some(60),
         rpd_limit: Some(2000),
