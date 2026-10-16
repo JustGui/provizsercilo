@@ -10,12 +10,14 @@ use crate::{
 
 pub struct BraveProvider {
     client: reqwest::Client,
+    endpoint: String,
 }
 
 impl Default for BraveProvider {
     fn default() -> Self {
         Self {
             client: build_client(15),
+            endpoint: "https://api.search.brave.com/res/v1/web/search".into(),
         }
     }
 }
@@ -57,11 +59,10 @@ impl SearchProvider for BraveProvider {
         } = q;
         let mut req = self
             .client
-            .get("https://api.search.brave.com/res/v1/web/search")
+            .get(&self.endpoint)
             .header("Accept", "application/json")
-            .header("Accept-Encoding", "gzip")
             .header("X-Subscription-Token", api_key)
-            .query(&[("q", query), ("count", &n.to_string())]);
+            .query(&[("q", query), ("count", &n.clamp(1, 20).to_string())]);
 
         if let Some(lang) = language {
             req = req.query(&[("search_lang", lang)]);
@@ -83,10 +84,11 @@ impl SearchProvider for BraveProvider {
             });
         }
 
-        let body: BraveResponse = resp
-            .json()
-            .await
-            .map_err(|e| ProviderError::Parse(e.to_string()))?;
+        let body: BraveResponse = resp.json().await.map_err(|_| {
+            ProviderError::Parse(
+                "brave: invalid JSON search response (expected web.results)".into(),
+            )
+        })?;
 
         let results: Vec<SearchResult> = body
             .web
@@ -157,5 +159,80 @@ mod tests {
             Some("1962-01-01to1963-12-31")
         );
         assert_eq!(brave_freshness(&Freshness::default()), None);
+    }
+}
+
+#[cfg(test)]
+mod http_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn response(body: &'static [u8], encoding: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let n = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..n]);
+            assert!(request.contains("count=20"));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("accept-encoding: gzip"));
+            let header = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n", body.len(), encoding);
+            stream.write_all(header.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+        });
+        format!("http://{address}/search")
+    }
+
+    async fn call(endpoint: String) -> Result<SearchOutput, ProviderError> {
+        BraveProvider {
+            client: build_client(2),
+            endpoint,
+        }
+        .search(SearchQuery {
+            query: "brave search",
+            n: 50,
+            language: None,
+            country: None,
+            api_key: "local-test-only",
+            extra_snippets: false,
+            full_content: None,
+            max_snippets: None,
+            min_score: None,
+            include_domains: &[],
+            exclude_domains: &[],
+            freshness: None,
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn documented_brave_shape_decodes_with_and_without_gzip() {
+        for (body, encoding) in [
+            (
+                include_bytes!("../tests/fixtures/brave-web.json").as_slice(),
+                "",
+            ),
+            (
+                include_bytes!("../tests/fixtures/brave-web.json.gz").as_slice(),
+                "Content-Encoding: gzip\r\n",
+            ),
+        ] {
+            let output = call(response(body, encoding).await).await.unwrap();
+            assert_eq!(output.results.len(), 1);
+            assert_eq!(output.results[0].url, "https://search.brave.com/");
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_brave_body_has_a_clear_safe_provider_error() {
+        let err = call(response(b"not JSON", "").await).await.err().unwrap();
+        assert_eq!(err.error_type_str(), "error");
+        assert!(err
+            .to_string()
+            .contains("brave: invalid JSON search response"));
+        assert!(!err.to_string().contains("not JSON"));
     }
 }

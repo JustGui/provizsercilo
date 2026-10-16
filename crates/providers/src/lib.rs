@@ -70,7 +70,7 @@ impl ProviderError {
             Self::Http { status, message } => {
                 let body = message.to_ascii_lowercase();
                 let billing = [
-                    "not enough credits",
+                    "not enough credit",
                     "credit balance",
                     "credits exhausted",
                     "insufficient credit",
@@ -89,6 +89,19 @@ impl ProviderError {
                 .any(|pattern| body.contains(pattern));
                 if matches!(status, 402 | 433) || (matches!(status, 400 | 403) && billing) {
                     E::Billing
+                } else if matches!(status, 401 | 403)
+                    || (*status == 400
+                        && [
+                            "invalid api key",
+                            "invalid_api_key",
+                            "invalid key",
+                            "invalid credential",
+                            "unauthorized",
+                        ]
+                        .iter()
+                        .any(|p| body.contains(p)))
+                {
+                    E::Auth
                 } else if *status == 422
                     || (*status == 400
                         && [
@@ -121,7 +134,10 @@ impl ProviderError {
     }
 
     pub fn is_ip_related(&self) -> bool {
-        matches!(self, Self::RateLimit | Self::Blocked)
+        matches!(
+            self.error_type(),
+            proviz_core::rate_limit::ErrorType::Rpm | proviz_core::rate_limit::ErrorType::Auth
+        )
     }
 }
 
@@ -288,6 +304,7 @@ mod error_tests {
             (403, r#"{"error":"quota exceeded"}"#, E::Billing),
             (403, r#"{"error":"QUOTA_LIMITED"}"#, E::Billing),
             (403, "invalid API key", E::Auth),
+            (400, "invalid API key", E::Auth),
             (401, "unauthorized", E::Auth),
             (429, "rate limited", E::Rpm),
             (422, "invalid query parameter", E::Request),

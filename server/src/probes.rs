@@ -57,30 +57,56 @@ impl ProbeRunner {
             .rate_limit
             .begin_probe(id, force)
             .ok_or_else(AppError::probe_busy)?;
-        let result = tokio::time::timeout(
-            Duration::from_millis(self.config.probe_timeout_ms),
-            self.executor.probe_key(id, &self.config.probe_query),
-        )
-        .await;
-        let error = match result {
-            Ok(Ok(())) => None,
-            Ok(Err(e)) => Some(e.error_type()),
-            Err(_) => Some(ErrorType::Timeout),
+        // If a request/task is cancelled, Drop releases the claim with backoff.
+        struct Claim<'a> {
+            runner: &'a ProbeRunner,
+            id: &'a str,
+            generation: u64,
+            finished: bool,
+        }
+        impl Drop for Claim<'_> {
+            fn drop(&mut self) {
+                if !self.finished {
+                    self.runner.rate_limit.finish_probe(
+                        self.id,
+                        self.generation,
+                        Err(ErrorType::Timeout),
+                        self.runner.config.probe_backoff_secs,
+                        self.runner.config.probe_max_backoff_secs,
+                    );
+                }
+            }
+        }
+        let mut claim = Claim {
+            runner: self,
+            id,
+            generation,
+            finished: false,
         };
+        let error = self
+            .executor
+            .probe_key(id, &self.config.probe_query, self.config.probe_timeout_ms)
+            .await
+            .err()
+            .map(|e| e.error_type());
         self.rate_limit.finish_probe(
             id,
             generation,
-            error.is_none(),
+            error.map_or(Ok(()), Err),
             self.config.probe_backoff_secs,
             self.config.probe_max_backoff_secs,
         );
+        claim.finished = true;
         // No provider response or request text is logged, including on decode errors.
-        tracing::info!(
-            key_id = id,
-            success = error.is_none(),
-            error_type = error.map(|e| e.as_str()),
-            "key probe completed"
-        );
+        if let Some(reason) = error {
+            tracing::warn!(
+                key_id = id,
+                error_type = reason.as_str(),
+                "key probe failed; remains parked"
+            );
+        } else {
+            tracing::info!(key_id = id, "key probe succeeded");
+        }
         Ok(ProbeOutcome {
             key_id: id.into(),
             success: error.is_none(),

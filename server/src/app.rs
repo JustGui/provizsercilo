@@ -268,3 +268,72 @@ fn build_admin_router(app_state: AppState) -> Router<AppState> {
             handlers::admin::require_admin_token,
         ))
 }
+
+#[cfg(test)]
+mod admin_probe_tests {
+    use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn parked_key_and_probe_routes_require_admin_authentication() {
+        let mut config = Config::from_env();
+        config.database_url = None;
+        config.database_path = ":memory:".into();
+        config.admin_token = Some("admin-test-only".into());
+        let (router, state) = build_app(config).await.unwrap();
+        state
+            .rate_limit
+            .report_error("test-key-id", proviz_core::rate_limit::ErrorType::Billing);
+        for (method, path) in [
+            ("GET", "/admin/keys/parked"),
+            ("POST", "/admin/keys/test-key-id/probe"),
+        ] {
+            for token in [None, Some("wrong-token")] {
+                let mut request = Request::builder().method(method).uri(path);
+                if let Some(token) = token {
+                    request = request.header("Authorization", format!("Bearer {token}"));
+                }
+                let response = router
+                    .clone()
+                    .oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            }
+        }
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/keys/parked")
+                    .header("Authorization", "Bearer admin-test-only")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(body[0]["key_id"], "test-key-id");
+        assert_eq!(body[0]["reason"], "billing");
+        assert!(body[0]["since"].as_str().is_some());
+        assert!(body[0].get("key_ref").is_none());
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/keys/test-key-id/probe")
+                    .header("Authorization", "Bearer admin-test-only")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+}
