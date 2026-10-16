@@ -2157,6 +2157,7 @@ dependencies = [
  "proviz-core",
  "rusqlite",
  "serde_json",
+ "tempdir",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

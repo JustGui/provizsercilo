@@ -619,6 +619,15 @@ impl Executor {
             if Instant::now() >= deadline {
                 return Err(ProviderError::Timeout);
             }
+            if candidate.api_key.pacing_rate().is_some()
+                && (self.rate_limit.is_limited(&candidate.api_key.id)
+                    || self
+                        .usage
+                        .rpd_headroom(&candidate.api_key.id, candidate.api_key.rpd_limit)
+                        <= 0.0)
+            {
+                return Err(last_err);
+            }
             self.usage.reserve(&candidate.api_key.id);
             struct InFlight<'a>(&'a UsageTracker, &'a str);
             impl Drop for InFlight<'_> {
@@ -1159,6 +1168,47 @@ mod tests {
                 .unwrap();
             assert_eq!(result.provider_slug, "exa");
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn paced_retries_do_not_exceed_daily_budget() {
+        let mut ex = paced_executor(Some(3000)).await;
+        let key = ex
+            .catalog
+            .read()
+            .await
+            .api_keys
+            .iter()
+            .find(|k| k.label == "staan" && k.is_active)
+            .unwrap()
+            .clone();
+        ex.catalog
+            .storage()
+            .update_api_key_fields(
+                &key.id,
+                None,
+                None,
+                None,
+                None,
+                Some(Some(1)),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        ex.catalog.reload().await.unwrap();
+        let mock = Arc::new(ControlledProvider::new(503));
+        ex.providers.insert("staan".into(), mock.clone());
+        let result = ex
+            .search(SearchParams {
+                max_fallbacks: 1,
+                ..paced_params()
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.provider_slug, "exa");
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test(start_paused = true)]

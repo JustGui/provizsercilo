@@ -743,3 +743,81 @@ fn format_cutoff(window_secs: i64) -> String {
         .naive_utc();
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    /// Run only against a disposable local database: this seeds a pre-queue schema.
+    #[tokio::test]
+    #[ignore = "requires PROVIZ_TEST_POSTGRES_URL pointing to a disposable database"]
+    async fn queue_limit_migrates_and_round_trips() {
+        let url = std::env::var("PROVIZ_TEST_POSTGRES_URL").unwrap();
+        let pool = PgPool::connect(&url).await.unwrap();
+        for statement in SCHEMA_STATEMENTS
+            .iter()
+            .filter(|s| !s.contains("max_queue_ms"))
+        {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        sqlx::query("INSERT INTO ps_providers (id, slug, name) VALUES ('p', 'staan', 'test')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO ps_api_keys (id, provider_id, label, key_ref) VALUES ('legacy', 'p', 'legacy', 'TEST_KEY')").execute(&pool).await.unwrap();
+        pool.close().await;
+        let storage = PgStorage::connect(&url).await.unwrap();
+        let legacy = storage.get_api_key("legacy").await.unwrap();
+        assert_eq!(legacy.max_queue_ms, None);
+        let mut key = legacy.clone();
+        key.id = "queued".into();
+        key.label = "queued".into();
+        key.max_queue_ms = Some(3000);
+        storage.create_api_key(key).await.unwrap();
+        assert_eq!(
+            storage.get_api_key("queued").await.unwrap().max_queue_ms,
+            Some(3000)
+        );
+        storage
+            .update_api_key_fields(
+                "legacy",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(Some(3200)),
+            )
+            .await
+            .unwrap();
+        storage.pool.close().await;
+        let storage = PgStorage::connect(&url).await.unwrap(); // migration rerun is safe
+        let keys = storage.list_keys_for_provider("p").await.unwrap();
+        assert_eq!(
+            keys.iter().find(|k| k.id == "legacy").unwrap().max_queue_ms,
+            Some(3200)
+        );
+        assert_eq!(storage.list_api_keys().await.unwrap().len(), 2);
+        storage
+            .update_api_key_fields(
+                "queued",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(None),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.get_api_key("queued").await.unwrap().max_queue_ms,
+            None
+        );
+        storage.pool.close().await;
+    }
+}

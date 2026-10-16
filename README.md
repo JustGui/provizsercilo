@@ -63,6 +63,8 @@ Brings up ProvizSercilo, SearXNG, and the DDG bridge together.
 | `SECRETS_DIR` | `/run/secrets` | Directory scanned first when resolving key refs |
 | `CACHE_TTL_SECS` | `3600` | Query cache TTL; `0` disables cache |
 | `DOC_CACHE_TTL_SECS` | `21600` (6h) | URL-keyed enrichment content cache TTL — separate from the query cache, reused across different queries that surface the same page |
+| `PACING_SAFETY` | `0.95` | Effective pacing rate multiplier, finite and >0 through 1; invalid values use the default |
+| `AUX_QUEUE_FRACTION` | `0.3` | Fraction of the main queue horizon available to aux requests, 0 up to but excluding 1 (reserves main capacity); invalid values use the default |
 | `MAX_FALLBACKS` | `3` | Maximum provider fallback attempts per request |
 | `TRANSIENT_FAILURES_BEFORE_COOLDOWN` | `3` | Consecutive transient failures (timeout, network/provider error, 5xx) before a key is put on cooldown; a success resets the count. The first cooldown expires normally; a second consecutive cooldown requires a probe. Empty results and request errors never count. Rate limits, auth and billing refusals start cooldowns at once. `1` = cool down on the first failure |
 | `BILLING_COOLDOWN_SECS` | `21600` | Initial parking period for billing/quota refusals before a probe is due |
@@ -85,6 +87,20 @@ ProvizSercilo supports two storage backends with the same schema and behaviour:
 - **SQLite** (default) — zero dependencies, ideal for single-node or development use. Configured via `DATABASE_PATH`.
 - **PostgreSQL** — set `DATABASE_URL=postgres://…` to connect to an existing PostgreSQL instance. The schema is created automatically on first start.
 
+### Per-key pacing
+
+`max_queue_ms BIGINT` on `ps_api_keys` (SQLite: `api_keys`) opts a key into process-local pacing. NULL, zero or negative values preserve the immediate `budget_exhausted` skip. Both storage backends migrate existing databases at startup. Create/update key admin requests accept `max_queue_ms`; set it to `0` to disable queueing. After changing SQL directly, call authenticated `POST /admin/reload` (or restart) to refresh the catalog:
+
+```sql
+UPDATE ps_api_keys SET max_queue_ms=3000 WHERE label='staan-1';
+```
+
+The per-key clock uses the tightest positive RPS or RPM limit, multiplied by `PACING_SAFETY`. For Staan at 20 RPS, the default is 19 requests/s. A request atomically reserves a slot only if its wait fits the queue horizon and the remaining `timeout_ms`, leaving a 50 ms response margin. Overflow is `budget_exhausted` and continues to the next candidate/tier without consuming `MAX_FALLBACKS`. Provider cooldowns and daily budgets remain enforced. Retries also reserve slots; `timeout_ms` bounds the complete search, including waits and retries.
+
+`priority: "main"` (default, also used for unknown strings) may reserve the full horizon. `priority: "aux"` may reserve only `AUX_QUEUE_FRACTION` of it: 900 ms for a 3000 ms key at the default fraction. Reservations keep their admitted order. Aux floods cannot fill the longer main horizon, so main requests retain capacity under pressure. At 19/s, a 3000 ms horizon admits 58 simultaneous requests including the immediate slot; all 60 require at least 3106 ms (for example 3200 ms). At a multiplier of 1, all 60 fit in 3000 ms.
+
+`/health` key entries expose `queue_depth` (currently waiting requests), `next_slot_delay_ms`, and cumulative `queued`, `wait_ms` (sum of reserved waits) and `overflow`. Queue logs contain key IDs, priority and counts/durations, never query text. Cancellation clears live queue depth but does not return the slot: its short unused interval expires naturally, with no permanent gap. These clocks/counters reset at restart. Production currently has one replica; scaling to multiple replicas requires shared pacing state. Probes still respect sliding-window budgets and do not join the user queue.
+
 API key values are **never stored in the database**. The `key_ref` column holds an env-var name (e.g. `BRAVE_KEY_1`); the actual value is resolved at search time from the environment or `SECRETS_DIR`.
 
 ## API
@@ -101,6 +117,8 @@ Content-Type: application/json
   "country": "us"         // optional ISO 3166-1 alpha-2
 }
 ```
+
+Optional `priority` (`"main"` or `"aux"`, default `"main"`) controls the pacing horizon. Optional `fallback_on_empty` defaults to `true`. With `false`, an empty provider answer returns HTTP 200 with `results: []`, the selected provider in `meta.provider`, and a `<provider>:empty` fallback-chain entry. Provider errors (timeouts, 5xx, auth, billing, rate limits) retain fallback behavior. Empty-result policy partitions the SERP cache, so it cannot reuse an answer from the other policy. Existing requests keep their cache keys.
 
 #### Content enrichment
 

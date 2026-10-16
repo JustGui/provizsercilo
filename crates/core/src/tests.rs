@@ -432,3 +432,38 @@ fn test_selector_skips_key_whose_daily_cap_is_used() {
     assert!(out.candidate.is_none());
     assert_eq!(out.decisions[0].reason.as_deref(), Some("budget_exhausted"));
 }
+
+#[test]
+fn pacing_bypasses_short_windows_but_keeps_daily_caps_and_cooldowns() {
+    let sel = make_selector();
+    let mut candidate = make_candidate("staan", "paced-key", 1, true);
+    candidate.api_key.max_queue_ms = Some(3000);
+    candidate.api_key.rps_limit = Some(1.0);
+    candidate.api_key.rpm_limit = Some(1);
+    sel.usage.reserve("paced-key");
+    sel.usage.complete("paced-key");
+    let request = SelectRequest {
+        allow_pacing: true,
+        ..Default::default()
+    };
+    assert!(sel
+        .select(&[candidate.clone()], &SelectRequest::default(), &[], false)
+        .candidate
+        .is_none());
+    assert!(sel
+        .select(&[candidate.clone()], &request, &[], false)
+        .candidate
+        .is_some());
+    candidate.api_key.rpd_limit = Some(1);
+    let outcome = sel.select(&[candidate.clone()], &request, &[], false);
+    assert!(outcome.candidate.is_none());
+    assert_eq!(
+        outcome.decisions[0].reason.as_deref(),
+        Some("budget_exhausted")
+    );
+    candidate.api_key.rpd_limit = None;
+    sel.rate_limit.report_error("paced-key", ErrorType::Rpm);
+    let outcome = sel.select(&[candidate], &request, &[], false);
+    assert!(outcome.candidate.is_none());
+    assert_eq!(outcome.decisions[0].reason.as_deref(), Some("rpm_cooldown"));
+}
