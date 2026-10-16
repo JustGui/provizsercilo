@@ -144,9 +144,9 @@ impl Pacer {
         }
         // Floor sub-nanosecond precision so repeated rounding cannot push an
         // exact cap boundary a few nanoseconds outside its configured window.
-        let interval = Duration::try_from_secs_f64(1.0 / (rate * self.safety))
+        let interval_ns = (1_000_000_000.0 / (rate * self.safety)).floor();
+        let interval = Duration::try_from_secs_f64(interval_ns / 1_000_000_000.0)
             .ok()
-            .map(|d| d.saturating_sub(Duration::from_nanos(1)))
             .filter(|d| !d.is_zero())
             .ok_or(())?;
         queue.next = at.checked_add(interval).ok_or(())?;
