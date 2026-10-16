@@ -30,6 +30,7 @@ pub async fn require_admin_token(
             code: "admin_disabled".to_string(),
             fallback_chain: None,
             attempts: None,
+            retry_after_secs: None,
         });
     };
 
@@ -439,4 +440,18 @@ pub async fn handle_remove_group_member(
         .await?;
     state.catalog.reload().await?;
     Ok(Json(serde_json::json!({"ok": true})))
+}
+
+/// Operational state contains IDs/reasons/timestamps, never resolved credentials.
+pub async fn handle_parked_keys(
+    State(state): State<AppState>,
+) -> Json<Vec<proviz_core::rate_limit::ParkedKey>> {
+    Json(state.rate_limit.parked_keys())
+}
+
+pub async fn handle_probe_key(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::probes::ProbeOutcome>, AppError> {
+    state.probes.run(&id, true).await.map(Json)
 }

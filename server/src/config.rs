@@ -18,8 +18,15 @@ pub struct Config {
     /// happen to surface the same URL. Mirrors rtfc's own 6h URL-content cache.
     pub doc_cache_ttl_secs: u64,
     pub max_fallbacks: usize,
-    /// Consecutive transient failures (timeout / 5xx / empty) before a key is cooled down.
+    /// Consecutive transient failures (timeout / 5xx) before a key is cooled down.
     pub transient_failures_before_cooldown: u32,
+    pub billing_cooldown_secs: u64,
+    pub probe_query: String,
+    pub probe_interval_secs: u64,
+    pub probe_concurrency: usize,
+    pub probe_timeout_ms: u64,
+    pub probe_backoff_secs: u64,
+    pub probe_max_backoff_secs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,6 +101,24 @@ impl Config {
             doc_cache_ttl_secs,
             max_fallbacks,
             transient_failures_before_cooldown,
+            billing_cooldown_secs: env_number("BILLING_COOLDOWN_SECS", 21600),
+            probe_query: std::env::var("PROBE_QUERY")
+                .ok()
+                .filter(|q| !q.trim().is_empty())
+                .unwrap_or_else(|| "test".into()),
+            probe_interval_secs: env_number("PROBE_INTERVAL_SECS", 30),
+            probe_concurrency: env_number("PROBE_CONCURRENCY", 4) as usize,
+            probe_timeout_ms: env_number("PROBE_TIMEOUT_MS", 5000),
+            probe_backoff_secs: env_number("PROBE_BACKOFF_SECS", 60),
+            probe_max_backoff_secs: env_number("PROBE_MAX_BACKOFF_SECS", 21600),
         }
     }
+}
+
+fn env_number(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+        .max(1)
 }

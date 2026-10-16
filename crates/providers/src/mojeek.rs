@@ -68,17 +68,10 @@ impl SearchProvider for MojeekProvider {
         let resp = req.send().await?;
         let status = resp.status().as_u16();
 
-        if status == 429 {
-            return Err(ProviderError::RateLimit);
-        }
-        if status == 401 || status == 403 {
-            return Err(ProviderError::Blocked);
-        }
         if !resp.status().is_success() {
-            let msg = resp.text().await.unwrap_or_default();
             return Err(ProviderError::Http {
                 status,
-                message: msg,
+                message: resp.text().await.unwrap_or_default(),
             });
         }
 

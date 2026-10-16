@@ -370,7 +370,7 @@ fn test_single_transient_failure_does_not_cool_down() {
         assert!(!rl.report_error("staan", et));
         assert!(!rl.is_limited("staan"));
     }
-    assert!(rl.report_error("staan", ErrorType::Empty)); // 3rd in a row
+    assert!(rl.report_error("staan", ErrorType::Error)); // 3rd failure in a row
     assert!(rl.is_limited("staan"));
 }
 

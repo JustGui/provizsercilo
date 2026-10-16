@@ -122,7 +122,13 @@ impl Selector {
             }
             if self.rate_limit.is_limited(&c.api_key.id) {
                 let remaining = self.rate_limit.cooldown_remaining_ms(&c.api_key.id);
-                decisions.push(skip_decision(c, "rpm_cooldown", None, Some(remaining)));
+                let reason = match self.rate_limit.cooldown_reason(&c.api_key.id) {
+                    Some(crate::rate_limit::ErrorType::Billing) => "billing_parked",
+                    Some(crate::rate_limit::ErrorType::Auth) => "auth_parked",
+                    _ if remaining == 0 => "probe_pending",
+                    _ => "rpm_cooldown",
+                };
+                decisions.push(skip_decision(c, reason, None, Some(remaining)));
                 continue;
             }
             if self.usage.budget_exhausted(

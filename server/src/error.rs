@@ -12,6 +12,7 @@ pub struct AppError {
     pub code: String,
     pub fallback_chain: Option<String>,
     pub attempts: Option<serde_json::Value>,
+    pub retry_after_secs: Option<u64>,
 }
 
 impl AppError {
@@ -22,6 +23,7 @@ impl AppError {
             code: "not_found".to_string(),
             fallback_chain: None,
             attempts: None,
+            retry_after_secs: None,
         }
     }
 
@@ -32,6 +34,7 @@ impl AppError {
             code: "unauthorized".to_string(),
             fallback_chain: None,
             attempts: None,
+            retry_after_secs: None,
         }
     }
 
@@ -42,6 +45,7 @@ impl AppError {
             code: "no_providers_available".to_string(),
             fallback_chain: None,
             attempts: None,
+            retry_after_secs: Some(1),
         }
     }
 
@@ -59,6 +63,34 @@ impl AppError {
             code: "no_providers_available".to_string(),
             fallback_chain: Some(fallback_chain.into()),
             attempts: serde_json::to_value(attempts).ok(),
+            retry_after_secs: Some(1),
+        }
+    }
+
+    pub fn with_retry_after(mut self, seconds: u64) -> Self {
+        self.retry_after_secs = Some(seconds.max(1));
+        self
+    }
+
+    pub fn request_error(message: String, chain: String, attempts: &impl serde::Serialize) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            code: "request_error".into(),
+            message,
+            fallback_chain: Some(chain),
+            attempts: serde_json::to_value(attempts).ok(),
+            retry_after_secs: None,
+        }
+    }
+
+    pub fn probe_busy() -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: "Probe already running or concurrency limit reached".into(),
+            code: "probe_busy".into(),
+            fallback_chain: None,
+            attempts: None,
+            retry_after_secs: None,
         }
     }
 
@@ -69,6 +101,7 @@ impl AppError {
             code: "internal_error".to_string(),
             fallback_chain: None,
             attempts: None,
+            retry_after_secs: None,
         }
     }
 }
@@ -85,7 +118,14 @@ impl IntoResponse for AppError {
         if let Some(attempts) = self.attempts {
             body["attempts"] = attempts;
         }
-        (self.status, Json(body)).into_response()
+        let mut response = (self.status, Json(body)).into_response();
+        if let Some(seconds) = self.retry_after_secs {
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                seconds.max(1).to_string().parse().expect("integer header"),
+            );
+        }
+        response
     }
 }
 

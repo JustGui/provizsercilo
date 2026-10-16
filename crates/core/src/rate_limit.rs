@@ -16,6 +16,8 @@ pub enum ErrorType {
     Rpm,
     Rpd,
     Auth,
+    Billing,
+    Request,
     Timeout,
     Empty,
     Error,
@@ -28,18 +30,17 @@ impl ErrorType {
             Self::Rpm => 60,
             Self::Rpd => 3600,
             Self::Auth => 300,
+            Self::Billing => 21600,
+            Self::Request => 0,
             Self::Timeout => 30,
-            Self::Empty => 10,
+            Self::Empty => 0,
             Self::Error => 60,
         }
     }
 
-    /// A failure that says nothing reliable about the key itself: one slow answer, one
-    /// 5xx, one query with no results. Only a run of them should take the key out of
-    /// rotation (see `RateLimitState::report_error`). 429 / 401 / 403 are explicit
-    /// provider signals and still cool the key down at once.
+    /// Only repeated transport/provider failures count against key health.
     pub fn is_transient(self) -> bool {
-        matches!(self, Self::Timeout | Self::Empty | Self::Error)
+        matches!(self, Self::Timeout | Self::Error)
     }
 
     pub fn as_str(self) -> &'static str {
@@ -48,6 +49,8 @@ impl ErrorType {
             Self::Rpm => "rpm",
             Self::Rpd => "rpd",
             Self::Auth => "auth",
+            Self::Billing => "billing",
+            Self::Request => "request",
             Self::Timeout => "timeout",
             Self::Empty => "empty",
             Self::Error => "error",
@@ -69,11 +72,31 @@ pub const DEFAULT_TRANSIENT_FAILURES_BEFORE_COOLDOWN: u32 = 3;
 const TRANSIENT_WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
+struct Cooldown {
+    until: Instant,
+    reason: ErrorType,
+    since: String,
+    failures: u32,
+    probing: bool,
+    generation: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ParkedKey {
+    pub key_id: String,
+    pub reason: ErrorType,
+    pub since: String,
+    pub retry_after_secs: u64,
+    pub probe_failures: u32,
+    pub probing: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct RateLimitState {
-    cooldowns: Arc<DashMap<String, (Instant, ErrorType)>>,
-    /// Per key: (consecutive transient failures, time of the last one).
+    cooldowns: Arc<DashMap<String, Cooldown>>,
     transient: Arc<DashMap<String, (u32, Instant)>>,
     transient_threshold: u32,
+    billing_cooldown_secs: u64,
 }
 
 impl Default for RateLimitState {
@@ -83,25 +106,34 @@ impl Default for RateLimitState {
 }
 
 impl RateLimitState {
-    /// `threshold` consecutive transient failures cool a key down; 0 or 1 = the old
-    /// behaviour (the first one does).
     pub fn with_transient_threshold(threshold: u32) -> Self {
         Self {
             cooldowns: Arc::new(DashMap::new()),
             transient: Arc::new(DashMap::new()),
             transient_threshold: threshold.max(1),
+            billing_cooldown_secs: ErrorType::Billing.cooldown_secs(),
         }
     }
 
+    pub fn with_billing_cooldown(mut self, seconds: u64) -> Self {
+        self.billing_cooldown_secs = seconds.max(1);
+        self
+    }
+
+    /// Expiry makes a probe due; only a successful probe releases the key.
     pub fn is_limited(&self, api_key_id: &str) -> bool {
-        if let Some(entry) = self.cooldowns.get(api_key_id) {
-            return Instant::now() < entry.0;
-        }
-        false
+        self.cooldowns.contains_key(api_key_id)
     }
 
-    /// Record a failure. Returns true when the key was put on cooldown.
     pub fn report_error(&self, api_key_id: &str, error_type: ErrorType) -> bool {
+        if matches!(error_type, ErrorType::Empty | ErrorType::Request) {
+            // An empty answer is healthy, and ends any run of failures. An invalid
+            // request says nothing about key health and leaves the count alone.
+            if error_type == ErrorType::Empty {
+                self.report_success(api_key_id);
+            }
+            return false;
+        }
         if error_type.is_transient() && self.transient_threshold > 1 {
             let now = Instant::now();
             let mut entry = self
@@ -118,34 +150,133 @@ impl RateLimitState {
             }
             entry.0 = 0;
         }
-        let unblocked_at = Instant::now() + Duration::from_secs(error_type.cooldown_secs());
-        self.cooldowns
-            .insert(api_key_id.to_string(), (unblocked_at, error_type));
+        let seconds = if error_type == ErrorType::Billing {
+            self.billing_cooldown_secs
+        } else {
+            error_type.cooldown_secs()
+        };
+        let mut entry = self
+            .cooldowns
+            .entry(api_key_id.to_string())
+            .or_insert_with(|| Cooldown {
+                until: Instant::now(),
+                reason: error_type,
+                since: chrono::Utc::now().to_rfc3339(),
+                failures: 0,
+                probing: false,
+                generation: 0,
+            });
+        entry.until = Instant::now() + Duration::from_secs(seconds);
+        entry.reason = error_type;
+        entry.generation += 1; // invalidates a probe racing a new user-call failure
+        entry.probing = false;
         true
     }
 
-    /// A successful call ends any run of transient failures.
+    /// A late successful user request must never release an already parked key.
     pub fn report_success(&self, api_key_id: &str) {
         self.transient.remove(api_key_id);
     }
 
     pub fn cooldown_remaining_ms(&self, api_key_id: &str) -> u64 {
-        if let Some(entry) = self.cooldowns.get(api_key_id) {
-            let now = Instant::now();
-            if now < entry.0 {
-                return (entry.0 - now).as_millis() as u64;
-            }
+        self.cooldowns
+            .get(api_key_id)
+            .map(|e| {
+                e.until
+                    .saturating_duration_since(Instant::now())
+                    .as_millis() as u64
+            })
+            .unwrap_or(0)
+    }
+
+    pub fn cooldown_reason(&self, api_key_id: &str) -> Option<ErrorType> {
+        self.cooldowns.get(api_key_id).map(|e| e.reason)
+    }
+
+    pub fn parked_keys(&self) -> Vec<ParkedKey> {
+        self.cooldowns
+            .iter()
+            .map(|e| ParkedKey {
+                key_id: e.key().clone(),
+                reason: e.reason,
+                since: e.since.clone(),
+                retry_after_secs: e
+                    .until
+                    .saturating_duration_since(Instant::now())
+                    .as_secs()
+                    .saturating_add(1),
+                probe_failures: e.failures,
+                probing: e.probing,
+            })
+            .collect()
+    }
+
+    pub fn due_probes(&self) -> Vec<String> {
+        let now = Instant::now();
+        self.cooldowns
+            .iter()
+            .filter(|e| !e.probing && e.until <= now)
+            .map(|e| e.key().clone())
+            .collect()
+    }
+
+    /// Atomically claim one probe. Manual probes may run before the due time,
+    /// but share the same per-key exclusion as the background worker.
+    pub fn begin_probe(&self, key_id: &str, force: bool) -> Option<u64> {
+        let mut e = self
+            .cooldowns
+            .entry(key_id.to_string())
+            .or_insert_with(|| Cooldown {
+                until: Instant::now(),
+                reason: ErrorType::Error,
+                since: chrono::Utc::now().to_rfc3339(),
+                failures: 0,
+                probing: false,
+                generation: 0,
+            });
+        if e.probing || (!force && e.until > Instant::now()) {
+            return None;
         }
-        0
+        e.probing = true;
+        e.generation += 1;
+        Some(e.generation)
+    }
+
+    pub fn finish_probe(
+        &self,
+        key_id: &str,
+        generation: u64,
+        success: bool,
+        backoff: u64,
+        max_backoff: u64,
+    ) {
+        let mut e = match self.cooldowns.get_mut(key_id) {
+            Some(e) if e.generation == generation && e.probing => e,
+            _ => return,
+        };
+        if success {
+            // Remove under the entry lock, so a concurrent new failure cannot be lost.
+            drop(e);
+            self.cooldowns
+                .remove_if(key_id, |_, e| e.generation == generation && e.probing);
+            self.transient.remove(key_id);
+        } else {
+            e.failures = e.failures.saturating_add(1);
+            let delay = backoff
+                .max(1)
+                .saturating_mul(1u64 << e.failures.saturating_sub(1).min(20))
+                .min(max_backoff.max(1));
+            e.until = Instant::now() + Duration::from_secs(delay);
+            e.probing = false;
+        }
     }
 
     pub fn key_state(&self, api_key_id: &str) -> KeyState {
-        if let Some(entry) = self.cooldowns.get(api_key_id) {
-            if Instant::now() < entry.0 {
-                return KeyState::Cooldown(self.cooldown_remaining_ms(api_key_id));
-            }
+        if self.is_limited(api_key_id) {
+            KeyState::Cooldown(self.cooldown_remaining_ms(api_key_id))
+        } else {
+            KeyState::Ok
         }
-        KeyState::Ok
     }
 }
 
@@ -315,5 +446,75 @@ impl UsageTracker {
         while events.len() > target_used {
             events.pop_front();
         }
+    }
+}
+
+#[cfg(test)]
+mod cooldown_tests {
+    use super::*;
+
+    #[test]
+    fn empty_answers_and_invalid_requests_never_cool_keys() {
+        let state = RateLimitState::with_transient_threshold(1);
+        for _ in 0..10 {
+            assert!(!state.report_error("key", ErrorType::Empty));
+            assert!(!state.report_error("key", ErrorType::Request));
+        }
+        assert!(!state.is_limited("key"));
+        let state = RateLimitState::default();
+        state.report_error("key", ErrorType::Timeout);
+        state.report_error("key", ErrorType::Timeout);
+        state.report_error("key", ErrorType::Empty);
+        assert!(!state.report_error("key", ErrorType::Timeout));
+    }
+
+    #[test]
+    fn repeated_transient_failures_still_cool_down() {
+        let state = RateLimitState::default();
+        assert!(!state.report_error("key", ErrorType::Timeout));
+        assert!(!state.report_error("key", ErrorType::Error));
+        assert!(state.report_error("key", ErrorType::Timeout));
+        assert!(state.is_limited("key"));
+    }
+
+    #[test]
+    fn parked_keys_require_a_successful_probe_and_failures_back_off() {
+        for reason in [ErrorType::Billing, ErrorType::Auth, ErrorType::Rpm] {
+            let state = RateLimitState::default().with_billing_cooldown(42);
+            assert!(state.report_error("key", reason));
+            if reason == ErrorType::Billing {
+                assert!((41000..=42000).contains(&state.cooldown_remaining_ms("key")));
+            }
+            let since = state.parked_keys()[0].since.clone();
+            state.cooldowns.get_mut("key").unwrap().until = Instant::now();
+            assert!(state.is_limited("key"));
+            assert_eq!(state.due_probes(), vec!["key"]);
+            let token = state.begin_probe("key", false).unwrap();
+            assert_eq!(state.begin_probe("key", true), None);
+            assert!(state.due_probes().is_empty());
+            state.report_success("key");
+            assert!(state.is_limited("key"));
+            state.finish_probe("key", token, false, 10, 60);
+            assert!(state.is_limited("key"));
+            assert_eq!(state.parked_keys()[0].probe_failures, 1);
+            assert_eq!(state.parked_keys()[0].since, since);
+            assert!(state.cooldown_remaining_ms("key") > 9000);
+            let token = state.begin_probe("key", true).unwrap();
+            state.finish_probe("key", token, false, 10, 60);
+            assert!(state.cooldown_remaining_ms("key") > 19000);
+            let token = state.begin_probe("key", true).unwrap();
+            state.finish_probe("key", token, true, 10, 60);
+            assert!(!state.is_limited("key"));
+        }
+    }
+
+    #[test]
+    fn stale_probe_cannot_release_a_new_failure() {
+        let state = RateLimitState::default();
+        state.report_error("key", ErrorType::Auth);
+        let token = state.begin_probe("key", true).unwrap();
+        state.report_error("key", ErrorType::Billing);
+        state.finish_probe("key", token, true, 10, 60);
+        assert_eq!(state.cooldown_reason("key"), Some(ErrorType::Billing));
     }
 }

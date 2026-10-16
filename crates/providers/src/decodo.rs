@@ -67,20 +67,10 @@ impl SearchProvider for DecodoProvider {
             .await?;
         let status = resp.status().as_u16();
 
-        if status == 429 {
-            debug!(provider = "decodo", status, "rate-limited");
-            return Err(ProviderError::RateLimit);
-        }
-        if status == 401 || status == 403 {
-            debug!(provider = "decodo", status, "auth/blocked");
-            return Err(ProviderError::Blocked);
-        }
         if !resp.status().is_success() {
-            let msg = resp.text().await.unwrap_or_default();
-            debug!(provider = "decodo", status, body = %msg, "http error");
             return Err(ProviderError::Http {
                 status,
-                message: msg,
+                message: resp.text().await.unwrap_or_default(),
             });
         }
 

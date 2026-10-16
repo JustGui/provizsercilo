@@ -25,6 +25,7 @@ use crate::{
 #[derive(Clone)]
 pub struct AppState {
     pub executor: Arc<Executor>,
+    pub probes: Arc<crate::probes::ProbeRunner>,
     pub content_executor: Arc<ContentExecutor>,
     pub catalog: CatalogStore,
     pub storage: Arc<dyn StorageBackend>,
@@ -141,7 +142,8 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
     let doc_cache = Arc::new(cache::DocCache::new());
     let stats = Arc::new(StatsTracker::new());
     let rate_limit =
-        RateLimitState::with_transient_threshold(config.transient_failures_before_cooldown);
+        RateLimitState::with_transient_threshold(config.transient_failures_before_cooldown)
+            .with_billing_cooldown(config.billing_cooldown_secs);
     let usage = UsageTracker::default();
 
     let profiles_content = std::fs::read_to_string(&config.profiles_path)
@@ -177,7 +179,15 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
         Arc::clone(&stats),
     ));
 
+    let probes = Arc::new(crate::probes::ProbeRunner::new(
+        Arc::clone(&executor),
+        catalog.clone(),
+        rate_limit.clone(),
+        Arc::clone(&config),
+    ));
+
     let state = AppState {
+        probes: Arc::clone(&probes),
         executor,
         content_executor,
         catalog,
@@ -203,6 +213,8 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
 
+    // A Weak reference lets the worker stop once the server state is dropped.
+    crate::probes::spawn_worker(Arc::downgrade(&probes), config.probe_interval_secs);
     Ok((router, state))
 }
 
@@ -223,6 +235,8 @@ fn build_admin_router(app_state: AppState) -> Router<AppState> {
             "/providers/:slug/keys",
             post(handlers::admin::handle_create_key),
         )
+        .route("/keys/parked", get(handlers::admin::handle_parked_keys))
+        .route("/keys/:id/probe", post(handlers::admin::handle_probe_key))
         .route("/keys/:id", patch(handlers::admin::handle_update_key))
         .route("/keys/:id", delete(handlers::admin::handle_delete_key))
         .route(

@@ -99,9 +99,97 @@ impl Executor {
         }
     }
 
+    /// A single minimal provider call. It bypasses user-search logs, cache, stats,
+    /// enrichment and fallback; result bodies are discarded immediately.
+    pub async fn probe_key(&self, key_id: &str, query: &str) -> Result<(), ProviderError> {
+        let catalog = self.catalog.read().await;
+        let candidate = catalog
+            .candidates(None)
+            .into_iter()
+            .find(|c| c.api_key.id == key_id)
+            .ok_or(ProviderError::Blocked)?;
+        drop(catalog);
+        let provider = self
+            .providers
+            .get(&candidate.provider.slug)
+            .ok_or_else(|| ProviderError::Parse("probe: no search adapter".into()))?;
+        let api_key = resolve_key(&candidate.api_key.key_ref, &self.secrets_dir)
+            .map_err(|_| ProviderError::Blocked)?;
+        let result = provider
+            .search(SearchQuery {
+                query,
+                n: 1,
+                language: None,
+                country: None,
+                api_key: &api_key,
+                extra_snippets: false,
+                full_content: None,
+                max_snippets: None,
+                min_score: None,
+                include_domains: &[],
+                exclude_domains: &[],
+                freshness: None,
+            })
+            .await;
+        match result {
+            Ok(_) | Err(ProviderError::Empty) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     pub async fn search(
         &self,
         params: SearchParams,
+    ) -> Result<ExecutionResult, crate::error::AppError> {
+        let start = Instant::now();
+        let result = self.search_inner(&params).await;
+        if let Err(error) = &result {
+            let last = error
+                .attempts
+                .as_ref()
+                .and_then(|v| v.as_array())
+                .and_then(|a| {
+                    a.iter().rev().find(|a| {
+                        a["error"]
+                            .as_str()
+                            .is_some_and(|e| !e.starts_with("skipped:"))
+                    })
+                });
+            let log = SearchLog {
+                id: Uuid::new_v4().to_string(),
+                query_hash: params.query_hash.clone(),
+                group_slug: params.group_slug.clone(),
+                language: params.language.clone(),
+                country: params.country.clone(),
+                provider_slug: last
+                    .and_then(|v| v["provider"].as_str())
+                    .map(str::to_string),
+                api_key_id: None,
+                n_requested: Some(params.n as i64),
+                n_returned: Some(0),
+                duration_ms: Some(start.elapsed().as_millis() as i64),
+                cache_hit: false,
+                success: Some(false),
+                error_type: Some(
+                    last.and_then(|v| v["error"].as_str())
+                        .unwrap_or(&error.code)
+                        .to_string(),
+                ),
+                fallback_chain: Some(error.fallback_chain.clone().unwrap_or_default()),
+                requested_at: String::new(),
+                cost: None,
+                currency: None,
+            };
+            if self.catalog.storage().log_search(log).await.is_err() {
+                warn!("failed to persist unsuccessful search audit row");
+            }
+        }
+        result
+    }
+
+    async fn search_inner(
+        &self,
+        params: &SearchParams,
     ) -> Result<ExecutionResult, crate::error::AppError> {
         let start = Instant::now();
         let catalog = self.catalog.read().await;
@@ -210,11 +298,10 @@ impl Executor {
             debug!(
                 attempt = real_attempts,
                 provider = candidate.provider.slug,
-                key_ref = candidate.api_key.key_ref,
                 "trying candidate"
             );
             let attempt_start = Instant::now();
-            let result = self.try_candidate(&candidate, &params).await;
+            let result = self.try_candidate(&candidate, params).await;
 
             match result {
                 Ok(output) => {
@@ -281,39 +368,18 @@ impl Executor {
                 }
                 Err(e) => {
                     let error_type = e.error_type_str();
-                    // info, not debug: the provider's own answer (status, message) is
-                    // the only way to tell why a paid key keeps failing.
                     info!(
                         provider = candidate.provider.slug,
-                        key_ref = candidate.api_key.key_ref,
-                        error_type,
-                        error = %e,
-                        "candidate failed, moving to next"
+                        error_type, "candidate failed"
                     );
                     chain_parts.push(format!("{}:{}", candidate.provider.slug, error_type));
-
-                    let et = match error_type {
-                        "rpm" => ErrorType::Rpm,
-                        "auth" => {
-                            warn!(
-                                key_id = candidate.api_key.id,
-                                key_ref = candidate.api_key.key_ref,
-                                "auth error - key disabled for 300s"
-                            );
-                            ErrorType::Auth
-                        }
-                        "timeout" => ErrorType::Timeout,
-                        "empty" => ErrorType::Empty,
-                        _ => ErrorType::Error,
-                    };
-
+                    let et = e.error_type();
                     if self.rate_limit.report_error(&candidate.api_key.id, et) {
                         warn!(
                             provider = candidate.provider.slug,
-                            key_ref = candidate.api_key.key_ref,
+                            key_id = candidate.api_key.id,
                             error_type,
-                            cooldown_secs = et.cooldown_secs(),
-                            "key cooled down"
+                            "key parked pending successful probe"
                         );
                     }
 
@@ -331,6 +397,13 @@ impl Executor {
                         error: Some(error_type.to_string()),
                         duration_ms: attempt_start.elapsed().as_millis() as u64,
                     });
+                    if et == ErrorType::Request {
+                        return Err(crate::error::AppError::request_error(
+                            e.to_string(),
+                            chain_parts.join(","),
+                            &attempt_records,
+                        ));
+                    }
                     excluded.push(candidate.api_key.id.clone());
                 }
             }
@@ -342,11 +415,28 @@ impl Executor {
             skipped = attempt_records.len() - real_attempts,
             "all candidates exhausted, no result"
         );
+        let retry_after = tiers
+            .iter()
+            .flatten()
+            .filter(|c| {
+                !params.exclude_key_ids.contains(&c.api_key.id)
+                    && !params.exclude_provider_slugs.contains(&c.provider.slug)
+                    && self.rate_limit.is_limited(&c.api_key.id)
+            })
+            .map(|c| {
+                self.rate_limit
+                    .cooldown_remaining_ms(&c.api_key.id)
+                    .div_ceil(1000)
+                    .max(1)
+            })
+            .min()
+            .unwrap_or(1);
         Err(crate::error::AppError::service_unavailable_with_attempts(
             "All provider candidates exhausted or rate-limited",
             chain_parts.join(","),
             &attempt_records,
-        ))
+        )
+        .with_retry_after(retry_after))
     }
 
     async fn try_candidate(
@@ -449,6 +539,7 @@ impl Executor {
             });
 
             let err = match result {
+                Ok(Ok(output)) if output.results.is_empty() => ProviderError::Empty,
                 Ok(Ok(output)) if !restricted => return Ok(output),
                 Ok(Ok(mut output)) => {
                     let before = output.results.len();
@@ -644,21 +735,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_run_of_failures_still_cools_the_key_down() {
+    async fn repeated_empty_answers_leave_the_key_in_rotation() {
         let ex = executor(3).await;
         for _ in 0..3 {
             let r = ex.search(params()).await.unwrap();
             assert_eq!(r.fallback_chain, "staan:empty,exa:ok");
         }
         let fourth = ex.search(params()).await.unwrap();
-        assert_eq!(fourth.provider_slug, "exa");
-        // staan is on cooldown: not called at all (it would answer ok by now)
-        assert!(
-            !fourth.fallback_chain.contains("staan:ok")
-                && !fourth.fallback_chain.contains("staan:empty"),
-            "chain: {}",
-            fourth.fallback_chain
-        );
+        assert_eq!(fourth.provider_slug, "staan");
+        assert_eq!(fourth.fallback_chain, "staan:ok");
     }
     /// Free-engine stand-in: ignores `include_domains`, records the query text it was
     /// sent, answers pages on and off the requested domains.

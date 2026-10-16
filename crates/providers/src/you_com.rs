@@ -244,18 +244,6 @@ fn parse_contents_response(
     Ok(ContentOutput { docs, failed })
 }
 
-fn map_status(status: u16) -> Option<ProviderError> {
-    match status {
-        429 => Some(ProviderError::RateLimit),
-        401 | 403 => Some(ProviderError::Blocked),
-        s if !(200..300).contains(&s) => Some(ProviderError::Http {
-            status: s,
-            message: String::new(),
-        }),
-        _ => None,
-    }
-}
-
 #[async_trait]
 impl SearchProvider for YouComProvider {
     fn slug(&self) -> &str {
@@ -329,12 +317,11 @@ impl SearchProvider for YouComProvider {
             .send()
             .await?;
         let status = resp.status().as_u16();
-        if let Some(mut err) = map_status(status) {
-            if let ProviderError::Http { message, .. } = &mut err {
-                *message = resp.text().await.unwrap_or_default();
-            }
-            debug!(provider = "you-com", status, "search error");
-            return Err(err);
+        if !resp.status().is_success() {
+            return Err(ProviderError::Http {
+                status,
+                message: resp.text().await.unwrap_or_default(),
+            });
         }
 
         let text = resp
@@ -377,12 +364,11 @@ impl ContentProvider for YouComProvider {
             .send()
             .await?;
         let status = resp.status().as_u16();
-        if let Some(mut err) = map_status(status) {
-            if let ProviderError::Http { message, .. } = &mut err {
-                *message = resp.text().await.unwrap_or_default();
-            }
-            debug!(provider = "you-com", status, "contents error");
-            return Err(err);
+        if !resp.status().is_success() {
+            return Err(ProviderError::Http {
+                status,
+                message: resp.text().await.unwrap_or_default(),
+            });
         }
 
         let text = resp
