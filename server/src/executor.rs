@@ -393,6 +393,7 @@ impl Executor {
                     });
                 }
                 Err(e) => {
+                    e.log_auth_billing_status();
                     let error_type = e.error_type_str();
                     info!(
                         provider = candidate.provider.slug,

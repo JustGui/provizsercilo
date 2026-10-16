@@ -188,7 +188,19 @@ storm for invalid input. The key remains eligible for other requests.
 
 Billing refusals (402, 433, and credit/quota/payment messages in 400/403 bodies)
 park the key with reason `billing`, emit a WARN and a `billing` rate event.
-401/other 403 responses park it as `auth`. Rate-limit cooldowns (`rps`: 5 s,
+401/other 403 responses park it as `auth`. If the key had a successful user call
+within `AUTH_RECENT_SUCCESS_SECS` (default 600) and no previous auth episode began within
+`AUTH_REPEAT_WINDOW_SECS` (default 600), the first auth cooldown is
+`AUTH_FIRST_COOLDOWN_SECS` (default 30); otherwise it is the full 300 seconds.
+Both auth cooldowns require a successful probe, due at expiry. User successes
+while parked do not release the key. Further in-flight auth errors in the same
+episode neither extend its deadline nor refresh the repeat window. An auth
+error after release starts a new episode and can trigger the full cooldown.
+Failed probes retain their normal backoff. User successes
+and successful probes do not clear the auth repeat window; probe successes do
+not count as successful user calls. Auth/billing HTTP failures log the numeric
+provider status only, without response bodies or credentials.
+Rate-limit cooldowns (`rps`: 5 s,
 `rpm`: 60 s, `rpd`: 3600 s) release on expiry without a probe. Transient failures
 start a cooldown after `TRANSIENT_FAILURES_BEFORE_COOLDOWN` consecutive failures:
 the first timeout/error cooldown releases on expiry (30 s / 60 s). A second
@@ -231,7 +243,8 @@ rounded up, or 1 when no cooldown deadline is available. A due probe-gated key
 still requires a probe, so the hint is not a guarantee of availability.
 
 Cooldowns, parking state and probe backoff are in memory, like rate budgets; a
-restart clears them. All probe timing/concurrency environment values must be
+restart clears them, including recent user-success and auth-error history.
+All probe timing/concurrency and auth timing environment values must be
 positive; zero is clamped to 1. The Brave client decodes gzip responses using
 reqwest's gzip support and caps its result count at Brave's documented maximum
 of 20; local compressed/uncompressed documentation fixtures cover this path.
