@@ -73,6 +73,7 @@ impl ProbeRunner {
                         Err(ErrorType::Timeout),
                         self.runner.config.probe_backoff_secs,
                         self.runner.config.probe_max_backoff_secs,
+                        self.runner.config.probe_max_backoff_transient_secs,
                     );
                 }
             }
@@ -95,6 +96,7 @@ impl ProbeRunner {
             error.map_or(Ok(()), Err),
             self.config.probe_backoff_secs,
             self.config.probe_max_backoff_secs,
+            self.config.probe_max_backoff_transient_secs,
         );
         claim.finished = true;
         // No provider response or request text is logged, including on decode errors.
@@ -102,7 +104,7 @@ impl ProbeRunner {
             tracing::warn!(
                 key_id = id,
                 error_type = reason.as_str(),
-                "key probe failed; remains parked"
+                "key probe did not succeed"
             );
         } else {
             tracing::info!(key_id = id, "key probe succeeded");

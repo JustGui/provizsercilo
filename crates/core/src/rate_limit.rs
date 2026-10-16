@@ -80,6 +80,30 @@ struct Cooldown {
     probing: bool,
     generation: u64,
     probe_generation: u64,
+    requires_probe: bool,
+    transient_cooldowns: u32,
+    probe_timeouts: u32,
+}
+
+impl Cooldown {
+    fn new(reason: ErrorType) -> Self {
+        Self {
+            until: Instant::now(),
+            reason,
+            since: chrono::Utc::now().to_rfc3339(),
+            failures: 0,
+            probing: false,
+            generation: 0,
+            probe_generation: 0,
+            requires_probe: false,
+            transient_cooldowns: 0,
+            probe_timeouts: 0,
+        }
+    }
+
+    fn is_limited(&self) -> bool {
+        self.requires_probe || self.until > Instant::now()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,9 +145,12 @@ impl RateLimitState {
         self
     }
 
-    /// Expiry makes a probe due; only a successful probe releases the key.
+    /// Provider throttles and a first transient cooldown release on expiry.
+    /// Dead or repeatedly failing keys require a successful probe instead.
     pub fn is_limited(&self, api_key_id: &str) -> bool {
-        self.cooldowns.contains_key(api_key_id)
+        self.cooldowns
+            .get(api_key_id)
+            .is_some_and(|e| e.is_limited())
     }
 
     pub fn report_error(&self, api_key_id: &str, error_type: ErrorType) -> bool {
@@ -159,15 +186,20 @@ impl RateLimitState {
         let mut entry = self
             .cooldowns
             .entry(api_key_id.to_string())
-            .or_insert_with(|| Cooldown {
-                until: Instant::now(),
-                reason: error_type,
-                since: chrono::Utc::now().to_rfc3339(),
-                failures: 0,
-                probing: false,
-                generation: 0,
-                probe_generation: 0,
-            });
+            .or_insert_with(|| Cooldown::new(error_type));
+        if !entry.is_limited() {
+            // Count cooldown episodes, not concurrent failures in the same one.
+            // Keep the history after expiry until a user call or probe succeeds.
+            if error_type.is_transient() {
+                entry.transient_cooldowns = entry.transient_cooldowns.saturating_add(1);
+            }
+            entry.since = chrono::Utc::now().to_rfc3339();
+            entry.reason = error_type;
+            entry.failures = 0;
+            entry.probe_timeouts = 0;
+        }
+        entry.requires_probe |= matches!(error_type, ErrorType::Billing | ErrorType::Auth)
+            || (error_type.is_transient() && entry.transient_cooldowns >= 2);
         // Concurrent in-flight calls may fail after the key was already parked.
         // A weaker/shorter failure must not undo billing or auth parking.
         entry.until = entry
@@ -175,7 +207,9 @@ impl RateLimitState {
             .max(Instant::now() + Duration::from_secs(seconds));
         if error_type == ErrorType::Billing
             || (entry.reason != ErrorType::Billing
-                && (entry.reason != ErrorType::Auth || error_type == ErrorType::Auth))
+                && (entry.reason != ErrorType::Auth || error_type == ErrorType::Auth)
+                && (!entry.requires_probe
+                    || !matches!(error_type, ErrorType::Rps | ErrorType::Rpm | ErrorType::Rpd)))
         {
             entry.reason = error_type;
         }
@@ -186,6 +220,9 @@ impl RateLimitState {
     /// A late successful user request must never release an already parked key.
     pub fn report_success(&self, api_key_id: &str) {
         self.transient.remove(api_key_id);
+        if let Some(mut e) = self.cooldowns.get_mut(api_key_id) {
+            e.transient_cooldowns = 0;
+        }
     }
 
     pub fn cooldown_remaining_ms(&self, api_key_id: &str) -> u64 {
@@ -200,12 +237,16 @@ impl RateLimitState {
     }
 
     pub fn cooldown_reason(&self, api_key_id: &str) -> Option<ErrorType> {
-        self.cooldowns.get(api_key_id).map(|e| e.reason)
+        self.cooldowns
+            .get(api_key_id)
+            .filter(|e| e.is_limited())
+            .map(|e| e.reason)
     }
 
     pub fn parked_keys(&self) -> Vec<ParkedKey> {
         self.cooldowns
             .iter()
+            .filter(|e| e.is_limited())
             .map(|e| ParkedKey {
                 key_id: e.key().clone(),
                 reason: e.reason,
@@ -225,7 +266,7 @@ impl RateLimitState {
         let now = Instant::now();
         self.cooldowns
             .iter()
-            .filter(|e| !e.probing && e.until <= now)
+            .filter(|e| e.requires_probe && !e.probing && e.until <= now)
             .map(|e| e.key().clone())
             .collect()
     }
@@ -236,19 +277,11 @@ impl RateLimitState {
         let mut e = if force {
             self.cooldowns
                 .entry(key_id.to_string())
-                .or_insert_with(|| Cooldown {
-                    until: Instant::now(),
-                    reason: ErrorType::Error,
-                    since: chrono::Utc::now().to_rfc3339(),
-                    failures: 0,
-                    probing: false,
-                    generation: 0,
-                    probe_generation: 0,
-                })
+                .or_insert_with(|| Cooldown::new(ErrorType::Error))
         } else {
             self.cooldowns.get_mut(key_id)?
         };
-        if e.probing || (!force && e.until > Instant::now()) {
+        if e.probing || (!force && (!e.requires_probe || e.until > Instant::now())) {
             return None;
         }
         e.probing = true;
@@ -264,6 +297,7 @@ impl RateLimitState {
         result: Result<(), ErrorType>,
         backoff: u64,
         max_backoff: u64,
+        max_transient_backoff: u64,
     ) {
         let mut e = match self.cooldowns.get_mut(key_id) {
             Some(e) if e.probe_generation == generation && e.probing => e,
@@ -280,14 +314,30 @@ impl RateLimitState {
                 .remove_if(key_id, |_, e| e.generation == generation && e.probing);
             self.transient.remove(key_id);
         } else {
+            if result == Err(ErrorType::Timeout) {
+                e.probe_timeouts = e.probe_timeouts.saturating_add(1);
+                if e.probe_timeouts < 2 {
+                    // One slow probe must not increase backoff. Retry on the next scan.
+                    e.probing = false;
+                    return;
+                }
+            } else {
+                e.probe_timeouts = 0;
+            }
             if let Err(reason @ (ErrorType::Billing | ErrorType::Auth)) = result {
                 e.reason = reason;
+                e.requires_probe = true;
             }
             e.failures = e.failures.saturating_add(1);
+            let cap = if matches!(e.reason, ErrorType::Billing | ErrorType::Auth) {
+                max_backoff
+            } else {
+                max_transient_backoff
+            };
             let delay = backoff
                 .max(1)
                 .saturating_mul(1u64 << e.failures.saturating_sub(1).min(20))
-                .min(max_backoff.max(1));
+                .min(cap.max(1));
             e.until = Instant::now() + Duration::from_secs(delay);
             e.probing = false;
         }
@@ -475,6 +525,138 @@ impl UsageTracker {
 mod cooldown_tests {
     use super::*;
 
+    fn expire(state: &RateLimitState, key: &str) {
+        state.cooldowns.get_mut(key).unwrap().until = Instant::now();
+    }
+
+    #[test]
+    fn rate_limits_and_first_transient_cooldowns_release_without_probes() {
+        for reason in [
+            ErrorType::Rps,
+            ErrorType::Rpm,
+            ErrorType::Rpd,
+            ErrorType::Timeout,
+            ErrorType::Error,
+        ] {
+            let state = RateLimitState::with_transient_threshold(1);
+            assert!(state.report_error("key", reason));
+            assert!(state.is_limited("key"));
+            expire(&state, "key");
+            assert!(!state.is_limited("key"), "{reason:?}");
+            assert_eq!(state.key_state("key"), KeyState::Ok);
+            assert_eq!(state.cooldown_reason("key"), None);
+            assert!(state.parked_keys().is_empty());
+            assert!(state.due_probes().is_empty());
+            assert_eq!(state.begin_probe("key", false), None);
+        }
+    }
+
+    #[test]
+    fn only_repeated_transient_cooldown_episodes_require_probes() {
+        let state = RateLimitState::default();
+        for _ in 0..6 {
+            state.report_error("key", ErrorType::Timeout);
+        }
+        // Concurrent errors during the first cooldown do not create a second episode.
+        expire(&state, "key");
+        assert!(!state.is_limited("key"));
+        for _ in 0..3 {
+            state.report_error("key", ErrorType::Error);
+        }
+        expire(&state, "key");
+        assert!(state.is_limited("key"));
+        assert_eq!(state.due_probes(), vec!["key"]);
+        let token = state.begin_probe("key", false).unwrap();
+        state.finish_probe("key", token, Ok(()), 60, 21600, 600);
+        assert!(!state.is_limited("key"));
+        for _ in 0..3 {
+            state.report_error("key", ErrorType::Timeout);
+        }
+        expire(&state, "key");
+        assert!(!state.is_limited("key"));
+    }
+
+    #[test]
+    fn success_resets_cooldown_history() {
+        for empty_answer in [false, true] {
+            let state = RateLimitState::with_transient_threshold(1);
+            state.report_error("key", ErrorType::Timeout);
+            expire(&state, "key");
+            if empty_answer {
+                state.report_error("key", ErrorType::Empty);
+            } else {
+                state.report_success("key");
+            }
+            state.report_error("key", ErrorType::Error);
+            expire(&state, "key");
+            assert!(!state.is_limited("key"));
+        }
+    }
+
+    #[test]
+    fn repeated_throttles_never_require_probes() {
+        let state = RateLimitState::default();
+        for reason in [
+            ErrorType::Rps,
+            ErrorType::Rpm,
+            ErrorType::Rpd,
+            ErrorType::Rps,
+        ] {
+            state.report_error("key", reason);
+            expire(&state, "key");
+            assert!(!state.is_limited("key"));
+            assert!(state.due_probes().is_empty());
+        }
+    }
+
+    #[test]
+    fn transient_probe_backoff_caps_at_ten_minutes_until_auth_or_billing_is_detected() {
+        for hard_failure in [ErrorType::Billing, ErrorType::Auth] {
+            let state = RateLimitState::with_transient_threshold(1);
+            state.report_error("key", ErrorType::Timeout);
+            expire(&state, "key");
+            state.report_error("key", ErrorType::Error);
+            for delay in [60, 120, 240, 480, 600, 600, 600, 600, 600, 600] {
+                expire(&state, "key");
+                let token = state.begin_probe("key", false).unwrap();
+                state.finish_probe("key", token, Err(ErrorType::Error), 60, 21600, 600);
+                assert!(((delay * 1000 - 1000)..=delay * 1000)
+                    .contains(&state.cooldown_remaining_ms("key")));
+            }
+            let token = state.begin_probe("key", true).unwrap();
+            state.finish_probe("key", token, Err(hard_failure), 60, 21600, 600);
+            assert_eq!(state.cooldown_reason("key"), Some(hard_failure));
+            assert!((21_599_000..=21_600_000).contains(&state.cooldown_remaining_ms("key")));
+        }
+    }
+
+    #[test]
+    fn probe_timeouts_only_back_off_after_two_consecutive_timeouts() {
+        let state = RateLimitState::default();
+        state.report_error("key", ErrorType::Billing);
+        expire(&state, "key");
+        let token = state.begin_probe("key", false).unwrap();
+        state.finish_probe("key", token, Err(ErrorType::Timeout), 60, 21600, 600);
+        assert_eq!(state.parked_keys()[0].probe_failures, 0);
+        assert_eq!(state.cooldown_remaining_ms("key"), 0);
+        assert_eq!(state.due_probes(), vec!["key"]);
+        let token = state.begin_probe("key", false).unwrap();
+        state.finish_probe("key", token, Err(ErrorType::Timeout), 60, 21600, 600);
+        assert_eq!(state.parked_keys()[0].probe_failures, 1);
+        assert!((59000..=60000).contains(&state.cooldown_remaining_ms("key")));
+        let token = state.begin_probe("key", true).unwrap();
+        state.finish_probe("key", token, Err(ErrorType::Error), 60, 21600, 600);
+        let deadline = state.cooldowns.get("key").unwrap().until;
+        let token = state.begin_probe("key", true).unwrap();
+        state.finish_probe("key", token, Err(ErrorType::Timeout), 60, 21600, 600);
+        assert_eq!(state.parked_keys()[0].probe_failures, 2);
+        assert_eq!(state.cooldowns.get("key").unwrap().until, deadline);
+        assert!(state.is_limited("key"));
+        let token = state.begin_probe("key", true).unwrap();
+        state.finish_probe("key", token, Ok(()), 60, 21600, 600);
+        assert!(!state.is_limited("key"));
+    }
+
     #[test]
     fn empty_answers_and_invalid_requests_never_cool_keys() {
         let state = RateLimitState::with_transient_threshold(1);
@@ -501,7 +683,7 @@ mod cooldown_tests {
 
     #[test]
     fn parked_keys_require_a_successful_probe_and_failures_back_off() {
-        for reason in [ErrorType::Billing, ErrorType::Auth, ErrorType::Rpm] {
+        for reason in [ErrorType::Billing, ErrorType::Auth] {
             let state = RateLimitState::default().with_billing_cooldown(42);
             assert!(state.report_error("key", reason));
             if reason == ErrorType::Billing {
@@ -516,16 +698,16 @@ mod cooldown_tests {
             assert!(state.due_probes().is_empty());
             state.report_success("key");
             assert!(state.is_limited("key"));
-            state.finish_probe("key", token, Err(reason), 10, 60);
+            state.finish_probe("key", token, Err(reason), 10, 60, 30);
             assert!(state.is_limited("key"));
             assert_eq!(state.parked_keys()[0].probe_failures, 1);
             assert_eq!(state.parked_keys()[0].since, since);
             assert!(state.cooldown_remaining_ms("key") > 9000);
             let token = state.begin_probe("key", true).unwrap();
-            state.finish_probe("key", token, Err(reason), 10, 60);
+            state.finish_probe("key", token, Err(reason), 10, 60, 30);
             assert!(state.cooldown_remaining_ms("key") > 19000);
             let token = state.begin_probe("key", true).unwrap();
-            state.finish_probe("key", token, Ok(()), 10, 60);
+            state.finish_probe("key", token, Ok(()), 10, 60, 30);
             assert!(!state.is_limited("key"));
         }
     }
@@ -537,7 +719,7 @@ mod cooldown_tests {
         let token = state.begin_probe("key", true).unwrap();
         state.report_error("key", ErrorType::Billing);
         assert_eq!(state.begin_probe("key", true), None);
-        state.finish_probe("key", token, Ok(()), 10, 60);
+        state.finish_probe("key", token, Ok(()), 10, 60, 30);
         assert_eq!(state.cooldown_reason("key"), Some(ErrorType::Billing));
         assert!(!state.parked_keys()[0].probing);
         assert!(state.begin_probe("key", true).is_some());
@@ -560,11 +742,11 @@ mod cooldown_tests {
         state.report_error("key", ErrorType::Auth);
         for _ in 0..10 {
             let token = state.begin_probe("key", true).unwrap();
-            state.finish_probe("key", token, Err(ErrorType::Auth), 10, 30);
+            state.finish_probe("key", token, Err(ErrorType::Auth), 10, 30, 20);
         }
         assert!((29000..=30000).contains(&state.cooldown_remaining_ms("key")));
         let token = state.begin_probe("key", true).unwrap();
-        state.finish_probe("key", token, Ok(()), 10, 30);
+        state.finish_probe("key", token, Ok(()), 10, 30, 20);
         assert!(state.begin_probe("key", false).is_none());
         assert!(!state.is_limited("key"));
     }

@@ -27,6 +27,7 @@ pub struct Config {
     pub probe_timeout_ms: u64,
     pub probe_backoff_secs: u64,
     pub probe_max_backoff_secs: u64,
+    pub probe_max_backoff_transient_secs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +112,7 @@ impl Config {
             probe_timeout_ms: env_number("PROBE_TIMEOUT_MS", 5000),
             probe_backoff_secs: env_number("PROBE_BACKOFF_SECS", 60),
             probe_max_backoff_secs: env_number("PROBE_MAX_BACKOFF_SECS", 21600),
+            probe_max_backoff_transient_secs: env_number("PROBE_MAX_BACKOFF_TRANSIENT_SECS", 600),
         }
     }
 }

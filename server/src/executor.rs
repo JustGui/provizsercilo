@@ -1200,7 +1200,7 @@ mod tests {
         let result = runner.run(&id, true).await.unwrap();
         assert!(!result.success);
         assert_eq!(result.error_type, Some("timeout"));
-        assert_eq!(ex.rate_limit.parked_keys()[0].probe_failures, 1);
+        assert_eq!(ex.rate_limit.parked_keys()[0].probe_failures, 0);
         assert!(!ex.rate_limit.parked_keys()[0].probing);
         let mut config = crate::config::Config::from_env();
         config.probe_timeout_ms = 1000;
@@ -1218,6 +1218,6 @@ mod tests {
         );
         assert!(ex.rate_limit.is_limited(&id));
         assert!(!ex.rate_limit.parked_keys()[0].probing);
-        assert_eq!(ex.rate_limit.parked_keys()[0].probe_failures, 2);
+        assert_eq!(ex.rate_limit.parked_keys()[0].probe_failures, 1);
     }
 }
