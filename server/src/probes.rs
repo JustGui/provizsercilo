@@ -89,7 +89,10 @@ impl ProbeRunner {
             .probe_key(id, &self.config.probe_query, self.config.probe_timeout_ms)
             .await
             .err()
-            .map(|e| e.error_type());
+            .map(|e| {
+                e.log_auth_billing_status();
+                e.error_type()
+            });
         self.rate_limit.finish_probe(
             id,
             generation,

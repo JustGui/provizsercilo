@@ -129,6 +129,23 @@ impl ProviderError {
         }
     }
 
+    /// Log only the numeric status for auth/billing HTTP failures, never the
+    /// provider body or resolved credentials. Shared by user calls and probes.
+    pub fn log_auth_billing_status(&self) {
+        if let Self::Http { status, .. } = self {
+            if matches!(
+                self.error_type(),
+                proviz_core::rate_limit::ErrorType::Auth
+                    | proviz_core::rate_limit::ErrorType::Billing
+            ) {
+                tracing::warn!(
+                    provider_http_status = *status,
+                    "provider auth/billing failure"
+                );
+            }
+        }
+    }
+
     pub fn error_type_str(&self) -> &'static str {
         self.error_type().as_str()
     }

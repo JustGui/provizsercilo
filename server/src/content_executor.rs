@@ -266,6 +266,7 @@ impl ContentExecutor {
             }
 
             if let Some(e) = hard_err {
+                e.log_auth_billing_status();
                 let et = e.error_type_str();
                 chain_parts.push(format!("{slug}:{et}"));
                 let etype = e.error_type();
