@@ -5,6 +5,7 @@ mod content_executor;
 mod error;
 mod executor;
 mod handlers;
+mod probes;
 mod seed;
 mod stats;
 

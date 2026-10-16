@@ -99,9 +99,123 @@ impl Executor {
         }
     }
 
+    /// A single minimal provider call. It bypasses user-search logs, cache, stats,
+    /// enrichment and fallback; result bodies are discarded immediately.
+    pub async fn probe_key(
+        &self,
+        key_id: &str,
+        query: &str,
+        timeout_ms: u64,
+    ) -> Result<(), ProviderError> {
+        let catalog = self.catalog.read().await;
+        let candidate = catalog
+            .candidates(None)
+            .into_iter()
+            .find(|c| c.api_key.id == key_id)
+            .ok_or(ProviderError::Blocked)?;
+        drop(catalog);
+        let provider = self
+            .providers
+            .get(&candidate.provider.slug)
+            .ok_or_else(|| ProviderError::Parse("probe: no search adapter".into()))?;
+        let api_key = resolve_key(&candidate.api_key.key_ref, &self.secrets_dir)
+            .map_err(|_| ProviderError::Blocked)?;
+        if self.usage.budget_exhausted(
+            key_id,
+            candidate.api_key.rps_limit,
+            candidate.api_key.rpm_limit,
+            candidate.api_key.rpd_limit,
+        ) {
+            return Err(ProviderError::RateLimit);
+        }
+        // Count real upstream traffic against configured budgets, while excluding
+        // probes from user-search metrics/logs. Drop also handles cancellation.
+        self.usage.reserve(key_id);
+        struct Reservation<'a>(&'a UsageTracker, &'a str);
+        impl Drop for Reservation<'_> {
+            fn drop(&mut self) {
+                self.0.complete(self.1);
+            }
+        }
+        let _reservation = Reservation(&self.usage, key_id);
+        let result = tokio::time::timeout(
+            Duration::from_millis(timeout_ms),
+            provider.search(SearchQuery {
+                query,
+                n: 1,
+                language: None,
+                country: None,
+                api_key: &api_key,
+                extra_snippets: false,
+                full_content: None,
+                max_snippets: None,
+                min_score: None,
+                include_domains: &[],
+                exclude_domains: &[],
+                freshness: None,
+            }),
+        )
+        .await
+        .map_err(|_| ProviderError::Timeout)?;
+        match result {
+            Ok(_) | Err(ProviderError::Empty) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     pub async fn search(
         &self,
         params: SearchParams,
+    ) -> Result<ExecutionResult, crate::error::AppError> {
+        let start = Instant::now();
+        let result = self.search_inner(&params).await;
+        if let Err(error) = &result {
+            let last = error
+                .attempts
+                .as_ref()
+                .and_then(|v| v.as_array())
+                .and_then(|a| {
+                    a.iter().rev().find(|a| {
+                        a["error"]
+                            .as_str()
+                            .is_some_and(|e| !e.starts_with("skipped:"))
+                    })
+                });
+            let log = SearchLog {
+                id: Uuid::new_v4().to_string(),
+                query_hash: params.query_hash.clone(),
+                group_slug: params.group_slug.clone(),
+                language: params.language.clone(),
+                country: params.country.clone(),
+                provider_slug: last
+                    .and_then(|v| v["provider"].as_str())
+                    .map(str::to_string),
+                api_key_id: None,
+                n_requested: Some(params.n as i64),
+                n_returned: Some(0),
+                duration_ms: Some(start.elapsed().as_millis() as i64),
+                cache_hit: false,
+                success: Some(false),
+                error_type: Some(
+                    last.and_then(|v| v["error"].as_str())
+                        .unwrap_or(&error.code)
+                        .to_string(),
+                ),
+                fallback_chain: Some(error.fallback_chain.clone().unwrap_or_default()),
+                requested_at: String::new(),
+                cost: None,
+                currency: None,
+            };
+            if self.catalog.storage().log_search(log).await.is_err() {
+                warn!("failed to persist unsuccessful search audit row");
+            }
+        }
+        result
+    }
+
+    async fn search_inner(
+        &self,
+        params: &SearchParams,
     ) -> Result<ExecutionResult, crate::error::AppError> {
         let start = Instant::now();
         let catalog = self.catalog.read().await;
@@ -210,11 +324,10 @@ impl Executor {
             debug!(
                 attempt = real_attempts,
                 provider = candidate.provider.slug,
-                key_ref = candidate.api_key.key_ref,
                 "trying candidate"
             );
             let attempt_start = Instant::now();
-            let result = self.try_candidate(&candidate, &params).await;
+            let result = self.try_candidate(&candidate, params).await;
 
             match result {
                 Ok(output) => {
@@ -281,39 +394,18 @@ impl Executor {
                 }
                 Err(e) => {
                     let error_type = e.error_type_str();
-                    // info, not debug: the provider's own answer (status, message) is
-                    // the only way to tell why a paid key keeps failing.
                     info!(
                         provider = candidate.provider.slug,
-                        key_ref = candidate.api_key.key_ref,
-                        error_type,
-                        error = %e,
-                        "candidate failed, moving to next"
+                        error_type, "candidate failed"
                     );
                     chain_parts.push(format!("{}:{}", candidate.provider.slug, error_type));
-
-                    let et = match error_type {
-                        "rpm" => ErrorType::Rpm,
-                        "auth" => {
-                            warn!(
-                                key_id = candidate.api_key.id,
-                                key_ref = candidate.api_key.key_ref,
-                                "auth error - key disabled for 300s"
-                            );
-                            ErrorType::Auth
-                        }
-                        "timeout" => ErrorType::Timeout,
-                        "empty" => ErrorType::Empty,
-                        _ => ErrorType::Error,
-                    };
-
+                    let et = e.error_type();
                     if self.rate_limit.report_error(&candidate.api_key.id, et) {
                         warn!(
                             provider = candidate.provider.slug,
-                            key_ref = candidate.api_key.key_ref,
+                            key_id = candidate.api_key.id,
                             error_type,
-                            cooldown_secs = et.cooldown_secs(),
-                            "key cooled down"
+                            "key parked pending successful probe"
                         );
                     }
 
@@ -331,6 +423,13 @@ impl Executor {
                         error: Some(error_type.to_string()),
                         duration_ms: attempt_start.elapsed().as_millis() as u64,
                     });
+                    if et == ErrorType::Request {
+                        return Err(crate::error::AppError::request_error(
+                            e.to_string(),
+                            chain_parts.join(","),
+                            &attempt_records,
+                        ));
+                    }
                     excluded.push(candidate.api_key.id.clone());
                 }
             }
@@ -342,11 +441,28 @@ impl Executor {
             skipped = attempt_records.len() - real_attempts,
             "all candidates exhausted, no result"
         );
+        let retry_after = tiers
+            .iter()
+            .flatten()
+            .filter(|c| {
+                !params.exclude_key_ids.contains(&c.api_key.id)
+                    && !params.exclude_provider_slugs.contains(&c.provider.slug)
+                    && self.rate_limit.is_limited(&c.api_key.id)
+            })
+            .map(|c| {
+                self.rate_limit
+                    .cooldown_remaining_ms(&c.api_key.id)
+                    .div_ceil(1000)
+                    .max(1)
+            })
+            .min()
+            .unwrap_or(1);
         Err(crate::error::AppError::service_unavailable_with_attempts(
             "All provider candidates exhausted or rate-limited",
             chain_parts.join(","),
             &attempt_records,
-        ))
+        )
+        .with_retry_after(retry_after))
     }
 
     async fn try_candidate(
@@ -449,6 +565,7 @@ impl Executor {
             });
 
             let err = match result {
+                Ok(Ok(output)) if output.results.is_empty() => ProviderError::Empty,
                 Ok(Ok(output)) if !restricted => return Ok(output),
                 Ok(Ok(mut output)) => {
                     let before = output.results.len();
@@ -534,7 +651,17 @@ mod tests {
 
     /// (slug, key env var, tier priority)
     async fn catalog_with(providers: &[(&str, &str, i64)]) -> CatalogStore {
-        let s = storage_sqlite::Storage::open_in_memory().unwrap();
+        catalog_in(
+            storage_sqlite::Storage::open_in_memory().unwrap(),
+            providers,
+        )
+        .await
+    }
+
+    async fn catalog_in(
+        s: storage_sqlite::Storage,
+        providers: &[(&str, &str, i64)],
+    ) -> CatalogStore {
         for (slug, key_ref, priority) in providers {
             std::env::set_var(key_ref, "k");
             let p = s
@@ -644,21 +771,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_run_of_failures_still_cools_the_key_down() {
+    async fn repeated_empty_answers_leave_the_key_in_rotation() {
         let ex = executor(3).await;
         for _ in 0..3 {
             let r = ex.search(params()).await.unwrap();
             assert_eq!(r.fallback_chain, "staan:empty,exa:ok");
         }
         let fourth = ex.search(params()).await.unwrap();
-        assert_eq!(fourth.provider_slug, "exa");
-        // staan is on cooldown: not called at all (it would answer ok by now)
-        assert!(
-            !fourth.fallback_chain.contains("staan:ok")
-                && !fourth.fallback_chain.contains("staan:empty"),
-            "chain: {}",
-            fourth.fallback_chain
-        );
+        assert_eq!(fourth.provider_slug, "staan");
+        assert_eq!(fourth.fallback_chain, "staan:ok");
     }
     /// Free-engine stand-in: ignores `include_domains`, records the query text it was
     /// sent, answers pages on and off the requested domains.
@@ -785,5 +906,318 @@ mod tests {
         let mut p = params();
         p.include_domains = vec!["ined.fr".into()];
         assert!(ex.search(p).await.is_err());
+    }
+    struct ControlledProvider {
+        status: std::sync::atomic::AtomicU16,
+        calls: AtomicUsize,
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+        delay_ms: u64,
+        seen: std::sync::Mutex<Vec<(String, usize)>>,
+    }
+
+    impl ControlledProvider {
+        fn new(status: u16) -> Self {
+            Self {
+                status: std::sync::atomic::AtomicU16::new(status),
+                calls: AtomicUsize::new(0),
+                active: AtomicUsize::new(0),
+                max_active: AtomicUsize::new(0),
+                delay_ms: 0,
+                seen: Default::default(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SearchProvider for ControlledProvider {
+        fn slug(&self) -> &str {
+            "controlled"
+        }
+        async fn search(&self, q: SearchQuery<'_>) -> Result<SearchOutput, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.seen.lock().unwrap().push((q.query.into(), q.n));
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            match self.status.load(Ordering::SeqCst) {
+                0 => Ok(SearchOutput::new(vec![])), // empty successful API answer
+                1 => Err(ProviderError::Empty),
+                status => Err(ProviderError::Http {
+                    status,
+                    message: if status == 400 {
+                        r#"{"message":["include_domains contains an invalid domain"],"statusCode":400}"#.into()
+                    } else {
+                        "payment_required".into()
+                    },
+                }),
+            }
+        }
+    }
+
+    fn controlled_executor(catalog: CatalogStore, mock: Arc<ControlledProvider>) -> Executor {
+        let rl = RateLimitState::default().with_billing_cooldown(1);
+        let usage = UsageTracker::default();
+        Executor::new(
+            catalog,
+            Arc::new(Selector::new(
+                rl.clone(),
+                usage.clone(),
+                ProfileMatcher::new(vec![]),
+            )),
+            HashMap::from([("staan".into(), mock as Arc<dyn SearchProvider>)]),
+            rl,
+            usage,
+            PathBuf::from("/nonexistent"),
+            Arc::new(StatsTracker::new()),
+        )
+    }
+
+    #[tokio::test]
+    async fn failed_search_rows_preserve_classification_and_chain_without_query_text() {
+        use axum::response::IntoResponse;
+        for (status, expected, code) in [
+            (402, "billing", 503),
+            (400, "request", 422),
+            (1, "empty", 503),
+            (0, "empty", 503),
+        ] {
+            let dir = tempdir::TempDir::new("sercilo6-search-log").unwrap();
+            let path = dir.path().join("test.db");
+            let catalog = catalog_in(
+                storage_sqlite::Storage::open(&path).unwrap(),
+                &[("staan", "AUDIT_TEST_KEY", 1)],
+            )
+            .await;
+            let mock = Arc::new(ControlledProvider::new(status));
+            let ex = controlled_executor(catalog, Arc::clone(&mock));
+            let mut request = params();
+            request.query = "private request text must never reach audit".into();
+            let error = ex.search(request).await.err().unwrap();
+            assert_eq!(error.status.as_u16(), code);
+            if status == 400 {
+                assert!(error
+                    .message
+                    .contains("include_domains contains an invalid domain"));
+                assert!(!ex
+                    .rate_limit
+                    .is_limited(&ex.catalog.read().await.api_keys[0].id));
+            }
+            assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+            let response = error.into_response();
+            if code == 503 {
+                assert!(
+                    response.headers()["Retry-After"]
+                        .to_str()
+                        .unwrap()
+                        .parse::<u64>()
+                        .unwrap()
+                        >= 1
+                );
+            } else {
+                assert!(!response.headers().contains_key("Retry-After"));
+            }
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let (success, kind, chain, hash): (bool, String, String, String) = conn
+                .query_row(
+                    "SELECT success, error_type, fallback_chain, query_hash FROM search_log",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap();
+            assert!(!success);
+            assert_eq!(kind, expected);
+            assert!(chain.contains(&format!("staan:{expected}")));
+            assert_eq!(hash, "h");
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM search_log", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+            // No key penalties for empty answers or invalid parameters.
+            if expected != "billing" {
+                assert!(ex.rate_limit.parked_keys().is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_parameter_stops_before_other_providers_are_tried() {
+        let mut ex = executor(0).await;
+        let mock = Arc::new(ControlledProvider::new(400));
+        ex.providers.insert("staan".into(), mock.clone());
+        let error = ex.search(params()).await.err().unwrap();
+        assert_eq!(error.status.as_u16(), 422);
+        assert_eq!(error.fallback_chain.as_deref(), Some("staan:request"));
+        assert_eq!(error.attempts.unwrap().as_array().unwrap().len(), 1);
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_after_uses_the_shortest_candidate_cooldown() {
+        let ex = executor(0).await;
+        let catalog = ex.catalog.read().await;
+        let ids: Vec<_> = catalog.api_keys.iter().map(|k| k.id.clone()).collect();
+        drop(catalog);
+        ex.rate_limit.report_error(&ids[0], ErrorType::Auth);
+        ex.rate_limit.report_error(&ids[1], ErrorType::Rpm);
+        let error = ex.search(params()).await.err().unwrap();
+        assert_eq!(error.retry_after_secs, Some(60));
+        let ex = controlled_executor(
+            catalog_with(&[]).await,
+            Arc::new(ControlledProvider::new(0)),
+        );
+        let error = ex.search(params()).await.err().unwrap();
+        assert_eq!(error.retry_after_secs, Some(1));
+        assert_eq!(
+            ex.catalog.storage().stats_window(60).await.unwrap(),
+            (1, 0, 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn probes_recover_parked_keys_without_user_search_logs() {
+        let dir = tempdir::TempDir::new("sercilo6-probes").unwrap();
+        let path = dir.path().join("test.db");
+        let catalog = catalog_in(
+            storage_sqlite::Storage::open(&path).unwrap(),
+            &[("staan", "PROBE_TEST_KEY", 1)],
+        )
+        .await;
+        let mock = Arc::new(ControlledProvider::new(402));
+        let ex = Arc::new(controlled_executor(catalog.clone(), mock.clone()));
+        let id = catalog.read().await.api_keys[0].id.clone();
+        assert!(ex.search(params()).await.is_err());
+        assert_eq!(ex.rate_limit.parked_keys()[0].reason, ErrorType::Billing);
+        let mut config = crate::config::Config::from_env();
+        config.probe_backoff_secs = 1;
+        config.probe_query = "test".into();
+        let runner = Arc::new(crate::probes::ProbeRunner::new(
+            ex.clone(),
+            catalog,
+            ex.rate_limit.clone(),
+            Arc::new(config),
+        ));
+        assert!(!runner.run(&id, true).await.unwrap().success);
+        assert!(ex.rate_limit.is_limited(&id));
+        assert_eq!(ex.rate_limit.parked_keys()[0].probe_failures, 1);
+        mock.status.store(1, Ordering::SeqCst); // healthy API with no matches is also a successful ping
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(ex.rate_limit.is_limited(&id)); // elapsed cooldown alone never re-enables
+        runner.run_due().await;
+        assert!(!ex.rate_limit.is_limited(&id));
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            mock.seen.lock().unwrap()[1..],
+            [("test".into(), 1), ("test".into(), 1)]
+        );
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM search_log", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        // The billing event is written independently from the search audit.
+        tokio::task::yield_now().await;
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM rate_events WHERE event_type='billing'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        // On-demand probes also recover auth-parked keys immediately after repair.
+        ex.rate_limit.report_error(&id, ErrorType::Auth);
+        assert!(runner.run(&id, true).await.unwrap().success);
+        assert!(!ex.rate_limit.is_limited(&id));
+    }
+
+    #[tokio::test]
+    async fn background_probes_bound_concurrency_and_ignore_disabled_keys() {
+        let catalog = catalog_with(&[
+            ("p1", "PROBE_BOUND1", 1),
+            ("p2", "PROBE_BOUND2", 1),
+            ("p3", "PROBE_BOUND3", 1),
+            ("p4", "PROBE_BOUND4", 1),
+        ])
+        .await;
+        let mock = Arc::new(ControlledProvider {
+            delay_ms: 30,
+            ..ControlledProvider::new(0)
+        });
+        let mut ex = controlled_executor(catalog.clone(), mock.clone());
+        for c in catalog.read().await.candidates(None) {
+            ex.providers.insert(c.provider.slug, mock.clone());
+            ex.rate_limit
+                .report_error(&c.api_key.id, ErrorType::Billing);
+        }
+        let ex = Arc::new(ex);
+        let mut config = crate::config::Config::from_env();
+        config.probe_concurrency = 2;
+        let runner = Arc::new(crate::probes::ProbeRunner::new(
+            ex.clone(),
+            catalog.clone(),
+            ex.rate_limit.clone(),
+            Arc::new(config),
+        ));
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        runner.run_due().await;
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 4);
+        assert_eq!(mock.max_active.load(Ordering::SeqCst), 2);
+        assert!(ex.rate_limit.parked_keys().is_empty());
+        let id = catalog.read().await.api_keys[0].id.clone();
+        catalog.storage().soft_delete_api_key(&id).await.unwrap();
+        catalog.reload().await.unwrap();
+        assert_eq!(
+            runner.run(&id, true).await.err().unwrap().status.as_u16(),
+            404
+        );
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 4);
+    }
+    #[tokio::test]
+    async fn timed_out_or_cancelled_probes_release_claims_and_keep_keys_parked() {
+        let catalog = catalog_with(&[("staan", "PROBE_TIMEOUT_KEY", 1)]).await;
+        let mock = Arc::new(ControlledProvider {
+            delay_ms: 100,
+            ..ControlledProvider::new(0)
+        });
+        let ex = Arc::new(controlled_executor(catalog.clone(), mock));
+        let id = catalog.read().await.api_keys[0].id.clone();
+        ex.rate_limit.report_error(&id, ErrorType::Auth);
+        let mut config = crate::config::Config::from_env();
+        config.probe_timeout_ms = 5;
+        let runner = Arc::new(crate::probes::ProbeRunner::new(
+            ex.clone(),
+            catalog.clone(),
+            ex.rate_limit.clone(),
+            Arc::new(config),
+        ));
+        let result = runner.run(&id, true).await.unwrap();
+        assert!(!result.success);
+        assert_eq!(result.error_type, Some("timeout"));
+        assert_eq!(ex.rate_limit.parked_keys()[0].probe_failures, 0);
+        assert!(!ex.rate_limit.parked_keys()[0].probing);
+        let mut config = crate::config::Config::from_env();
+        config.probe_timeout_ms = 1000;
+        let runner = Arc::new(crate::probes::ProbeRunner::new(
+            ex.clone(),
+            catalog,
+            ex.rate_limit.clone(),
+            Arc::new(config),
+        ));
+        // Dropping an in-progress admin request must not strand the key in probing.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), runner.run(&id, true))
+                .await
+                .is_err()
+        );
+        assert!(ex.rate_limit.is_limited(&id));
+        assert!(!ex.rate_limit.parked_keys()[0].probing);
+        assert_eq!(ex.rate_limit.parked_keys()[0].probe_failures, 1);
     }
 }

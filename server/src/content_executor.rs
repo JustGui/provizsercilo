@@ -9,7 +9,7 @@ use providers::{ContentProvider, ContentQuery, ProviderError};
 use proviz_core::{
     key_resolver::resolve_key,
     models::{Candidate, FullContent},
-    rate_limit::{ErrorType, RateLimitState, UsageTracker},
+    rate_limit::{RateLimitState, UsageTracker},
     selector::{DebugDecision, SelectRequest, Selector},
 };
 use tracing::{debug, warn};
@@ -268,20 +268,14 @@ impl ContentExecutor {
             if let Some(e) = hard_err {
                 let et = e.error_type_str();
                 chain_parts.push(format!("{slug}:{et}"));
-                let etype = match et {
-                    "rpm" => ErrorType::Rpm,
-                    "auth" => ErrorType::Auth,
-                    "timeout" => ErrorType::Timeout,
-                    "empty" => ErrorType::Empty,
-                    _ => ErrorType::Error,
-                };
-                if et == "auth" {
+                let etype = e.error_type();
+                if self.rate_limit.report_error(&candidate.api_key.id, etype) {
                     warn!(
                         key_id = candidate.api_key.id,
-                        "content provider auth error - key disabled 300s"
+                        error_type = et,
+                        "content key parked pending successful probe"
                     );
                 }
-                self.rate_limit.report_error(&candidate.api_key.id, etype);
                 let storage = Arc::clone(self.catalog.storage());
                 let kid2 = candidate.api_key.id.clone();
                 let ets = et.to_string();

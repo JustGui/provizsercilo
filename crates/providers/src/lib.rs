@@ -58,22 +58,86 @@ pub enum ProviderError {
 }
 
 impl ProviderError {
-    /// Map this error to the event_type string used in rate_events and cooldowns.
-    pub fn error_type_str(&self) -> &'static str {
+    /// Classify the HTTP status *and* body before discarding any provider detail.
+    pub fn error_type(&self) -> proviz_core::rate_limit::ErrorType {
+        use proviz_core::rate_limit::ErrorType as E;
         match self {
-            Self::RateLimit => "rpm",
-            Self::Blocked => "auth",
-            Self::Timeout => "timeout",
-            Self::Empty => "empty",
-            // A client-side timeout surfaces as a reqwest error; it was counted as a
-            // generic "error" (60 s cooldown) instead of a timeout.
-            Self::Request(e) if e.is_timeout() => "timeout",
-            _ => "error",
+            Self::RateLimit => E::Rpm,
+            Self::Blocked => E::Auth,
+            Self::Timeout => E::Timeout,
+            Self::Empty => E::Empty,
+            Self::Request(e) if e.is_timeout() => E::Timeout,
+            Self::Http { status, message } => {
+                let body = message.to_ascii_lowercase();
+                let billing = [
+                    "not enough credit",
+                    "credit balance",
+                    "credits exhausted",
+                    "insufficient credit",
+                    "quota exceeded",
+                    "quota_exceeded",
+                    "quota_limited",
+                    "pay-as-you-go limit",
+                    "payment_required",
+                    "payment required",
+                    "billing",
+                    "credit limit",
+                    "out of credits",
+                    "insufficient_quota",
+                ]
+                .iter()
+                .any(|pattern| body.contains(pattern));
+                if matches!(status, 402 | 433) || (matches!(status, 400 | 403) && billing) {
+                    E::Billing
+                } else if matches!(status, 401 | 403)
+                    || (*status == 400
+                        && [
+                            "invalid api key",
+                            "invalid_api_key",
+                            "invalid key",
+                            "invalid credential",
+                            "unauthorized",
+                        ]
+                        .iter()
+                        .any(|p| body.contains(p)))
+                {
+                    E::Auth
+                } else if *status == 422
+                    || (*status == 400
+                        && [
+                            "invalid",
+                            "validation",
+                            "missing required",
+                            "unsupported parameter",
+                            "must be",
+                            "is required",
+                        ]
+                        .iter()
+                        .any(|p| body.contains(p)))
+                {
+                    E::Request
+                } else {
+                    match status {
+                        401 | 403 => E::Auth,
+                        429 => E::Rpm,
+                        408 | 504 => E::Timeout,
+                        _ => E::Error,
+                    }
+                }
+            }
+            _ => E::Error,
         }
     }
 
+    pub fn error_type_str(&self) -> &'static str {
+        self.error_type().as_str()
+    }
+
     pub fn is_ip_related(&self) -> bool {
-        matches!(self, Self::RateLimit | Self::Blocked)
+        matches!(
+            self.error_type(),
+            proviz_core::rate_limit::ErrorType::Rpm | proviz_core::rate_limit::ErrorType::Auth
+        )
     }
 }
 
@@ -207,4 +271,60 @@ pub fn build_client(timeout_secs: u64) -> reqwest::Client {
         .user_agent("ProvizSercilo/0.1 (search-router)")
         .build()
         .expect("Failed to build reqwest client")
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+    use proviz_core::rate_limit::ErrorType as E;
+
+    #[test]
+    fn production_http_failures_are_classified_before_fallback() {
+        for (status, body, expected) in [
+            (
+                400,
+                r#"{"message":"Not enough credits","statusCode":400}"#,
+                E::Billing,
+            ),
+            (
+                433,
+                r#"{"detail":{"error":"This request exceeds the pay-as-you-go limit. You can increase ..."}}"#,
+                E::Billing,
+            ),
+            (
+                402,
+                r#"{"error":"payment_required","message":"Your prepaid credit balance has been depleted..."}"#,
+                E::Billing,
+            ),
+            (
+                400,
+                r#"{"message":["include_domains contains an invalid domain"],"error":"Bad Request","statusCode":400}"#,
+                E::Request,
+            ),
+            (403, r#"{"error":"quota exceeded"}"#, E::Billing),
+            (403, r#"{"error":"QUOTA_LIMITED"}"#, E::Billing),
+            (403, "invalid API key", E::Auth),
+            (400, "invalid API key", E::Auth),
+            (401, "unauthorized", E::Auth),
+            (429, "rate limited", E::Rpm),
+            (422, "invalid query parameter", E::Request),
+            (400, "invalid value for count", E::Request),
+            (500, "internal error", E::Error),
+            (504, "gateway timeout", E::Timeout),
+        ] {
+            assert_eq!(
+                ProviderError::Http {
+                    status,
+                    message: body.into()
+                }
+                .error_type(),
+                expected
+            );
+        }
+        assert_eq!(ProviderError::Empty.error_type(), E::Empty);
+        assert_eq!(
+            ProviderError::Parse("brave: invalid JSON".into()).error_type(),
+            E::Error
+        );
+    }
 }
