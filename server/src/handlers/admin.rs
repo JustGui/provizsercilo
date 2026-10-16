@@ -138,6 +138,7 @@ pub struct ApiKeyPublic {
     pub label: String,
     pub key_ref: String,
     pub is_active: bool,
+    pub max_queue_ms: Option<i64>,
     pub rps_limit: Option<f64>,
     pub rpm_limit: Option<i64>,
     pub rpd_limit: Option<i64>,
@@ -155,6 +156,7 @@ impl From<ApiKey> for ApiKeyPublic {
             label: k.label,
             key_ref: k.key_ref,
             is_active: k.is_active,
+            max_queue_ms: k.max_queue_ms,
             rps_limit: k.rps_limit,
             rpm_limit: k.rpm_limit,
             rpd_limit: k.rpd_limit,
@@ -179,6 +181,7 @@ pub async fn handle_list_keys(
 pub struct CreateKeyRequest {
     pub label: String,
     pub key_ref: String,
+    pub max_queue_ms: Option<i64>,
     pub rps_limit: Option<f64>,
     pub rpm_limit: Option<i64>,
     pub rpd_limit: Option<i64>,
@@ -200,6 +203,7 @@ pub async fn handle_create_key(
         label: req.label,
         key_ref: req.key_ref,
         is_active: true,
+        max_queue_ms: req.max_queue_ms,
         rps_limit: req.rps_limit,
         rpm_limit: req.rpm_limit,
         rpd_limit: req.rpd_limit,
@@ -222,6 +226,7 @@ pub struct UpdateKeyRequest {
     pub label: Option<String>,
     pub is_active: Option<bool>,
     pub key_ref: Option<String>,
+    pub max_queue_ms: Option<Option<i64>>,
     pub rpm_limit: Option<Option<i64>>,
     pub rpd_limit: Option<Option<i64>>,
     pub cost_per_mille: Option<Option<f64>>,
@@ -244,6 +249,7 @@ pub async fn handle_update_key(
             req.rpd_limit,
             req.cost_per_mille,
             req.currency,
+            req.max_queue_ms,
         )
         .await?;
     state.catalog.reload().await?;

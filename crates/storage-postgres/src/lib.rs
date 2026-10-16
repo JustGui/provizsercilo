@@ -38,6 +38,7 @@ const SCHEMA_STATEMENTS: &[&str] = &[
     )",
     "ALTER TABLE ps_api_keys ADD COLUMN IF NOT EXISTS cost_per_mille DOUBLE PRECISION",
     "ALTER TABLE ps_api_keys ADD COLUMN IF NOT EXISTS currency TEXT",
+    "ALTER TABLE ps_api_keys ADD COLUMN IF NOT EXISTS max_queue_ms BIGINT",
     "CREATE TABLE IF NOT EXISTS ps_groups (\
         id TEXT PRIMARY KEY, \
         slug TEXT UNIQUE NOT NULL, \
@@ -125,6 +126,7 @@ fn read_api_key(row: &PgRow) -> Result<ApiKey, StorageError> {
         label: row.try_get("label").map_err(row_err)?,
         key_ref: row.try_get("key_ref").map_err(row_err)?,
         is_active: row.try_get("is_active").map_err(row_err)?,
+        max_queue_ms: row.try_get("max_queue_ms").map_err(row_err)?,
         rps_limit: row.try_get("rps_limit").map_err(row_err)?,
         rpm_limit: row.try_get("rpm_limit").map_err(row_err)?,
         rpd_limit: row.try_get("rpd_limit").map_err(row_err)?,
@@ -275,7 +277,7 @@ impl StorageBackend for PgStorage {
     async fn list_api_keys(&self) -> Result<Vec<ApiKey>, StorageError> {
         let rows = sqlx::query(
             "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                    rpd_limit, last_used_at, created_at, cost_per_mille, currency FROM ps_api_keys",
+                    rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms FROM ps_api_keys",
         )
         .fetch_all(&self.pool)
         .await
@@ -286,7 +288,7 @@ impl StorageBackend for PgStorage {
     async fn list_keys_for_provider(&self, provider_id: &str) -> Result<Vec<ApiKey>, StorageError> {
         let rows = sqlx::query(
             "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                    rpd_limit, last_used_at, created_at, cost_per_mille, currency
+                    rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms
              FROM ps_api_keys WHERE provider_id = $1",
         )
         .bind(provider_id)
@@ -299,7 +301,7 @@ impl StorageBackend for PgStorage {
     async fn get_api_key(&self, id: &str) -> Result<ApiKey, StorageError> {
         let row = sqlx::query(
             "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                    rpd_limit, last_used_at, created_at, cost_per_mille, currency
+                    rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms
              FROM ps_api_keys WHERE id = $1",
         )
         .bind(id)
@@ -313,8 +315,8 @@ impl StorageBackend for PgStorage {
     async fn create_api_key(&self, key: ApiKey) -> Result<ApiKey, StorageError> {
         sqlx::query(
             "INSERT INTO ps_api_keys (id, provider_id, label, key_ref, is_active, rps_limit,
-             rpm_limit, rpd_limit, cost_per_mille, currency)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             rpm_limit, rpd_limit, cost_per_mille, currency, max_queue_ms)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&key.id)
         .bind(&key.provider_id)
@@ -326,6 +328,7 @@ impl StorageBackend for PgStorage {
         .bind(key.rpd_limit)
         .bind(key.cost_per_mille)
         .bind(&key.currency)
+        .bind(key.max_queue_ms)
         .execute(&self.pool)
         .await
         .map_err(pg_err)?;
@@ -342,6 +345,7 @@ impl StorageBackend for PgStorage {
         rpd_limit: Option<Option<i64>>,
         cost_per_mille: Option<Option<f64>>,
         currency: Option<Option<String>>,
+        max_queue_ms: Option<Option<i64>>,
     ) -> Result<(), StorageError> {
         if let Some(v) = label {
             sqlx::query("UPDATE ps_api_keys SET label = $1 WHERE id = $2")
@@ -385,6 +389,14 @@ impl StorageBackend for PgStorage {
         }
         if let Some(v) = cost_per_mille {
             sqlx::query("UPDATE ps_api_keys SET cost_per_mille = $1 WHERE id = $2")
+                .bind(v)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(pg_err)?;
+        }
+        if let Some(v) = max_queue_ms {
+            sqlx::query("UPDATE ps_api_keys SET max_queue_ms = $1 WHERE id = $2")
                 .bind(v)
                 .bind(id)
                 .execute(&self.pool)
@@ -730,4 +742,82 @@ fn format_cutoff(window_secs: i64) -> String {
         .unwrap_or_default()
         .naive_utc();
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    /// Run only against a disposable local database: this seeds a pre-queue schema.
+    #[tokio::test]
+    #[ignore = "requires PROVIZ_TEST_POSTGRES_URL pointing to a disposable database"]
+    async fn queue_limit_migrates_and_round_trips() {
+        let url = std::env::var("PROVIZ_TEST_POSTGRES_URL").unwrap();
+        let pool = PgPool::connect(&url).await.unwrap();
+        for statement in SCHEMA_STATEMENTS
+            .iter()
+            .filter(|s| !s.contains("max_queue_ms"))
+        {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        sqlx::query("INSERT INTO ps_providers (id, slug, name) VALUES ('p', 'staan', 'test')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO ps_api_keys (id, provider_id, label, key_ref) VALUES ('legacy', 'p', 'legacy', 'TEST_KEY')").execute(&pool).await.unwrap();
+        pool.close().await;
+        let storage = PgStorage::connect(&url).await.unwrap();
+        let legacy = storage.get_api_key("legacy").await.unwrap();
+        assert_eq!(legacy.max_queue_ms, None);
+        let mut key = legacy.clone();
+        key.id = "queued".into();
+        key.label = "queued".into();
+        key.max_queue_ms = Some(3000);
+        storage.create_api_key(key).await.unwrap();
+        assert_eq!(
+            storage.get_api_key("queued").await.unwrap().max_queue_ms,
+            Some(3000)
+        );
+        storage
+            .update_api_key_fields(
+                "legacy",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(Some(3200)),
+            )
+            .await
+            .unwrap();
+        storage.pool.close().await;
+        let storage = PgStorage::connect(&url).await.unwrap(); // migration rerun is safe
+        let keys = storage.list_keys_for_provider("p").await.unwrap();
+        assert_eq!(
+            keys.iter().find(|k| k.id == "legacy").unwrap().max_queue_ms,
+            Some(3200)
+        );
+        assert_eq!(storage.list_api_keys().await.unwrap().len(), 2);
+        storage
+            .update_api_key_fields(
+                "queued",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(None),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.get_api_key("queued").await.unwrap().max_queue_ms,
+            None
+        );
+        storage.pool.close().await;
+    }
 }

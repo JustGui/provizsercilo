@@ -31,6 +31,10 @@ pub struct SearchRequest {
     pub exclude_key_ids: Vec<String>,
     pub max_fallbacks: Option<usize>,
     pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub priority: crate::pacing::Priority,
+    #[serde(default = "default_true")]
+    pub fallback_on_empty: bool,
     pub cache_ttl_secs: Option<u64>,
     #[serde(default)]
     pub debug: bool,
@@ -50,7 +54,7 @@ pub struct SearchRequest {
     /// unfiltered, capable providers fill the enriched fields when they're reached,
     /// and a fallback to a non-capable provider simply returns bare results
     /// (`extra_snippets` / `full_content` absent) rather than failing.
-    #[serde(default = "default_require_enrichment")]
+    #[serde(default = "default_true")]
     pub require_enrichment: bool,
     #[serde(default)]
     pub include_domains: Vec<String>,
@@ -69,7 +73,7 @@ fn default_n() -> usize {
     10
 }
 
-fn default_require_enrichment() -> bool {
+fn default_true() -> bool {
     true
 }
 
@@ -96,6 +100,9 @@ fn enrichment_cache_key(req: &SearchRequest, freshness: &Freshness) -> String {
             req.include_domains.join(","),
             req.exclude_domains.join(",")
         );
+    }
+    if !req.fallback_on_empty {
+        key.push_str("&fallback_on_empty=false");
     }
     let f = freshness.cache_key();
     if !f.is_empty() {
@@ -200,6 +207,8 @@ pub async fn handle_search(
             n,
             timeout_ms,
             max_fallbacks,
+            priority: req.priority,
+            fallback_on_empty: req.fallback_on_empty,
             debug: req.debug,
             exclude_key_ids: req.exclude_key_ids,
             exclude_provider_slugs: req.exclude_providers,
@@ -281,4 +290,33 @@ pub async fn handle_search(
         debug: result.debug_decisions,
         attempts: result.attempts,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pacing::Priority;
+
+    #[test]
+    fn defaults_unknown_priority_and_empty_policy_cache_partition() {
+        let old: SearchRequest =
+            serde_json::from_value(serde_json::json!({"query":"test"})).unwrap();
+        assert!(matches!(old.priority, Priority::Main));
+        assert!(old.fallback_on_empty);
+        assert_eq!(enrichment_cache_key(&old, &Freshness::default()), "");
+        let aux: SearchRequest =
+            serde_json::from_value(serde_json::json!({"query":"test", "priority":"aux"})).unwrap();
+        assert!(matches!(aux.priority, Priority::Aux));
+        let unknown: SearchRequest =
+            serde_json::from_value(serde_json::json!({"query":"test", "priority":"future-value"}))
+                .unwrap();
+        assert!(matches!(unknown.priority, Priority::Main));
+        let no_fallback: SearchRequest =
+            serde_json::from_value(serde_json::json!({"query":"test", "fallback_on_empty":false}))
+                .unwrap();
+        assert_ne!(
+            enrichment_cache_key(&no_fallback, &Freshness::default()),
+            enrichment_cache_key(&old, &Freshness::default())
+        );
+    }
 }

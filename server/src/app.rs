@@ -164,15 +164,18 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
     let providers = build_providers();
     let config = Arc::new(config);
 
-    let executor = Arc::new(Executor::new(
-        catalog.clone(),
-        Arc::clone(&selector),
-        providers,
-        rate_limit.clone(),
-        usage.clone(),
-        config.secrets_dir.clone(),
-        Arc::clone(&stats),
-    ));
+    let executor = Arc::new(
+        Executor::new(
+            catalog.clone(),
+            Arc::clone(&selector),
+            providers,
+            rate_limit.clone(),
+            usage.clone(),
+            config.secrets_dir.clone(),
+            Arc::clone(&stats),
+        )
+        .with_pacing(config.pacing_safety, config.aux_queue_fraction),
+    );
 
     let content_executor = Arc::new(ContentExecutor::new(
         catalog.clone(),

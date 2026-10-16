@@ -18,6 +18,8 @@ pub struct Config {
     /// happen to surface the same URL. Mirrors rtfc's own 6h URL-content cache.
     pub doc_cache_ttl_secs: u64,
     pub max_fallbacks: usize,
+    pub pacing_safety: f64,
+    pub aux_queue_fraction: f64,
     /// Consecutive transient failures (timeout / 5xx) before a key is cooled down.
     pub transient_failures_before_cooldown: u32,
     pub billing_cooldown_secs: u64,
@@ -104,6 +106,8 @@ impl Config {
             cache_ttl_secs,
             doc_cache_ttl_secs,
             max_fallbacks,
+            pacing_safety: env_fraction("PACING_SAFETY", 0.95, false),
+            aux_queue_fraction: env_fraction("AUX_QUEUE_FRACTION", 0.3, true),
             transient_failures_before_cooldown,
             billing_cooldown_secs: env_number("BILLING_COOLDOWN_SECS", 21600),
             auth_recent_success_secs: env_number("AUTH_RECENT_SUCCESS_SECS", 600),
@@ -129,4 +133,19 @@ fn env_number(name: &str, default: u64) -> u64 {
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
         .max(1)
+}
+
+fn env_fraction(name: &str, default: f64, allow_zero: bool) -> f64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| {
+            v.is_finite()
+                && (if allow_zero {
+                    *v >= 0.0 && *v < 1.0
+                } else {
+                    *v > 0.0 && *v <= 1.0
+                })
+        })
+        .unwrap_or(default)
 }

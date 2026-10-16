@@ -448,6 +448,7 @@ mod tests {
                 label: slug.to_string(),
                 key_ref: key_ref.to_string(),
                 is_active: true,
+                max_queue_ms: None,
                 rps_limit: None,
                 rpm_limit: None,
                 rpd_limit: None,

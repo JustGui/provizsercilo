@@ -33,6 +33,7 @@ fn make_key(provider_id: &str, label: &str) -> ApiKey {
         label: label.to_string(),
         key_ref: format!("{label}_REF"),
         is_active: true,
+        max_queue_ms: None,
         rps_limit: None,
         rpm_limit: Some(60),
         rpd_limit: Some(2000),
@@ -182,4 +183,71 @@ async fn test_coverage_scores_roundtrip() {
     let retrieved = storage.get_provider_by_slug("mojeek").await.unwrap();
     assert_eq!(retrieved.coverage_scores.get("en_gb"), Some(&0.95));
     assert_eq!(retrieved.coverage_scores.get("fr"), Some(&0.3));
+}
+
+#[tokio::test]
+async fn queue_limit_survives_migration_reopen_and_admin_updates() {
+    let dir = tempdir::TempDir::new("sercilo-queue-migration").unwrap();
+    let path = dir.path().join("test.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(crate::migrations::SCHEMA_V1).unwrap();
+    drop(conn); // pre-queue schema, as deployed before this change
+    let storage = Storage::open(&path).unwrap();
+    let p = make_provider("staan");
+    storage.create_provider(p.clone()).await.unwrap();
+    let legacy = make_key(&p.id, "legacy");
+    storage.create_api_key(legacy.clone()).await.unwrap();
+    assert_eq!(
+        storage.get_api_key(&legacy.id).await.unwrap().max_queue_ms,
+        None
+    );
+    let mut key = make_key(&p.id, "queued");
+    key.max_queue_ms = Some(3000);
+    storage.create_api_key(key.clone()).await.unwrap();
+    assert_eq!(
+        storage.get_api_key(&key.id).await.unwrap().max_queue_ms,
+        Some(3000)
+    );
+    storage
+        .update_api_key_fields(
+            &legacy.id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(Some(3200)),
+        )
+        .await
+        .unwrap();
+    drop(storage);
+    let storage = Storage::open(&path).unwrap(); // migrations are idempotent
+    let keys = storage.list_keys_for_provider(&p.id).await.unwrap();
+    assert_eq!(
+        keys.iter()
+            .find(|k| k.id == legacy.id)
+            .unwrap()
+            .max_queue_ms,
+        Some(3200)
+    );
+    storage
+        .update_api_key_fields(
+            &key.id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(None),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        storage.get_api_key(&key.id).await.unwrap().max_queue_ms,
+        None
+    );
 }

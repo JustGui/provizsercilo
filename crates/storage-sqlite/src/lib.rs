@@ -101,6 +101,7 @@ fn read_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
         label: row.get(2)?,
         key_ref: row.get(3)?,
         is_active: row.get(4)?,
+        max_queue_ms: row.get(12)?,
         rps_limit: row.get(5)?,
         rpm_limit: row.get(6)?,
         rpd_limit: row.get(7)?,
@@ -338,7 +339,7 @@ impl StorageBackend for Storage {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                        rpd_limit, last_used_at, created_at, cost_per_mille, currency FROM api_keys",
+                        rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms FROM api_keys",
             )?;
             let mapped = stmt.query_map([], read_key)?;
             Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -351,7 +352,7 @@ impl StorageBackend for Storage {
         self.with_conn(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                        rpd_limit, last_used_at, created_at, cost_per_mille, currency
+                        rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms
                  FROM api_keys WHERE provider_id = ?1",
             )?;
             let mapped = stmt.query_map(params![pid], read_key)?;
@@ -365,7 +366,7 @@ impl StorageBackend for Storage {
         self.with_conn(move |conn| {
             conn.query_row(
                 "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                        rpd_limit, last_used_at, created_at, cost_per_mille, currency
+                        rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms
                  FROM api_keys WHERE id = ?1",
                 params![id.clone()],
                 read_key,
@@ -379,8 +380,8 @@ impl StorageBackend for Storage {
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO api_keys (id, provider_id, label, key_ref, is_active, rps_limit,
-                 rpm_limit, rpd_limit, cost_per_mille, currency)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 rpm_limit, rpd_limit, cost_per_mille, currency, max_queue_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     key.id,
                     key.provider_id,
@@ -391,7 +392,8 @@ impl StorageBackend for Storage {
                     key.rpm_limit,
                     key.rpd_limit,
                     key.cost_per_mille,
-                    key.currency
+                    key.currency,
+                    key.max_queue_ms
                 ],
             )?;
             Ok(key)
@@ -409,6 +411,7 @@ impl StorageBackend for Storage {
         rpd_limit: Option<Option<i64>>,
         cost_per_mille: Option<Option<f64>>,
         currency: Option<Option<String>>,
+        max_queue_ms: Option<Option<i64>>,
     ) -> Result<(), StorageError> {
         let id = id.to_string();
         self.with_conn(move |conn| {
@@ -445,6 +448,12 @@ impl StorageBackend for Storage {
             if let Some(v) = cost_per_mille {
                 conn.execute(
                     "UPDATE api_keys SET cost_per_mille = ?1 WHERE id = ?2",
+                    params![v, id],
+                )?;
+            }
+            if let Some(v) = max_queue_ms {
+                conn.execute(
+                    "UPDATE api_keys SET max_queue_ms = ?1 WHERE id = ?2",
                     params![v, id],
                 )?;
             }
