@@ -143,7 +143,12 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
     let stats = Arc::new(StatsTracker::new());
     let rate_limit =
         RateLimitState::with_transient_threshold(config.transient_failures_before_cooldown)
-            .with_billing_cooldown(config.billing_cooldown_secs);
+            .with_billing_cooldown(config.billing_cooldown_secs)
+            .with_auth_cooldown(
+                config.auth_recent_success_secs,
+                config.auth_repeat_window_secs,
+                config.auth_first_cooldown_secs,
+            );
     let usage = UsageTracker::default();
 
     let profiles_content = std::fs::read_to_string(&config.profiles_path)

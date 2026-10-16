@@ -21,6 +21,9 @@ pub struct Config {
     /// Consecutive transient failures (timeout / 5xx) before a key is cooled down.
     pub transient_failures_before_cooldown: u32,
     pub billing_cooldown_secs: u64,
+    pub auth_recent_success_secs: u64,
+    pub auth_repeat_window_secs: u64,
+    pub auth_first_cooldown_secs: u64,
     pub probe_query: String,
     pub probe_interval_secs: u64,
     pub probe_concurrency: usize,
@@ -103,6 +106,9 @@ impl Config {
             max_fallbacks,
             transient_failures_before_cooldown,
             billing_cooldown_secs: env_number("BILLING_COOLDOWN_SECS", 21600),
+            auth_recent_success_secs: env_number("AUTH_RECENT_SUCCESS_SECS", 600),
+            auth_repeat_window_secs: env_number("AUTH_REPEAT_WINDOW_SECS", 600),
+            auth_first_cooldown_secs: env_number("AUTH_FIRST_COOLDOWN_SECS", 30),
             probe_query: std::env::var("PROBE_QUERY")
                 .ok()
                 .filter(|q| !q.trim().is_empty())
