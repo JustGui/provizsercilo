@@ -12,6 +12,8 @@ use crate::{
 
 #[derive(Debug, Clone, Default)]
 pub struct SelectRequest {
+    /// Search executor reserves paced slots after selection; other callers keep budget skips.
+    pub allow_pacing: bool,
     pub language: Option<String>,
     pub country: Option<String>,
     pub exclude_key_ids: Vec<String>,
@@ -131,10 +133,11 @@ impl Selector {
                 decisions.push(skip_decision(c, reason, None, Some(remaining)));
                 continue;
             }
+            let paced = req.allow_pacing && c.api_key.pacing_rate().is_some();
             if self.usage.budget_exhausted(
                 &c.api_key.id,
-                c.api_key.rps_limit,
-                c.api_key.rpm_limit,
+                if paced { None } else { c.api_key.rps_limit },
+                if paced { None } else { c.api_key.rpm_limit },
                 c.api_key.rpd_limit,
             ) {
                 decisions.push(skip_decision(c, "budget_exhausted", None, None));

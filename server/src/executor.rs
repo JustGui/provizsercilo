@@ -1,9 +1,4 @@
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use providers::{operators, ProviderError, SearchProvider, SearchQuery};
 use proviz_core::{
@@ -12,10 +7,15 @@ use proviz_core::{
     rate_limit::{ErrorType, RateLimitState, UsageTracker},
     selector::{DebugDecision, SelectRequest, Selector},
 };
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{catalog::CatalogStore, stats::StatsTracker};
+use crate::{
+    catalog::CatalogStore,
+    pacing::{Pacer, Priority},
+    stats::StatsTracker,
+};
 
 pub struct SearchParams {
     pub query: String,
@@ -25,6 +25,8 @@ pub struct SearchParams {
     pub group_slug: Option<String>,
     pub n: usize,
     pub timeout_ms: u64,
+    pub priority: Priority,
+    pub fallback_on_empty: bool,
     pub max_fallbacks: usize,
     pub debug: bool,
     pub exclude_key_ids: Vec<String>,
@@ -69,6 +71,7 @@ pub struct ExecutionResult {
 }
 
 pub struct Executor {
+    pub pacer: Pacer,
     catalog: CatalogStore,
     selector: Arc<Selector>,
     providers: HashMap<String, Arc<dyn SearchProvider>>,
@@ -89,6 +92,7 @@ impl Executor {
         stats: Arc<StatsTracker>,
     ) -> Self {
         Self {
+            pacer: Pacer::default(),
             catalog,
             selector,
             providers,
@@ -97,6 +101,11 @@ impl Executor {
             secrets_dir,
             stats,
         }
+    }
+
+    pub fn with_pacing(mut self, safety: f64, aux_fraction: f64) -> Self {
+        self.pacer = Pacer::new(safety, aux_fraction);
+        self
     }
 
     /// A single minimal provider call. It bypasses user-search logs, cache, stats,
@@ -218,6 +227,7 @@ impl Executor {
         params: &SearchParams,
     ) -> Result<ExecutionResult, crate::error::AppError> {
         let start = Instant::now();
+        let deadline = start + Duration::from_millis(params.timeout_ms);
         let catalog = self.catalog.read().await;
         let mut pool = catalog.candidates(params.group_slug.as_deref());
         drop(catalog);
@@ -266,6 +276,7 @@ impl Executor {
         };
 
         let req = SelectRequest {
+            allow_pacing: true,
             language: params.language.clone(),
             country: params.country.clone(),
             exclude_key_ids: params.exclude_key_ids.clone(),
@@ -284,7 +295,7 @@ impl Executor {
         let mut real_attempts: usize = 0;
 
         loop {
-            if real_attempts > params.max_fallbacks {
+            if real_attempts > params.max_fallbacks || Instant::now() >= deadline {
                 break;
             }
 
@@ -320,6 +331,53 @@ impl Executor {
                 continue;
             };
 
+            let slot = match self
+                .pacer
+                .reserve(&candidate.api_key, params.priority, deadline)
+            {
+                Ok(slot) => slot,
+                Err(()) => {
+                    chain_parts.push(format!(
+                        "{}:skipped:budget_exhausted",
+                        candidate.provider.slug
+                    ));
+                    attempt_records.push(AttemptRecord {
+                        provider: candidate.provider.slug.clone(),
+                        success: false,
+                        error: Some("skipped:budget_exhausted".into()),
+                        duration_ms: 0,
+                    });
+                    if params.debug {
+                        all_decisions.push(DebugDecision {
+                            provider: candidate.provider.slug.clone(),
+                            key_label: candidate.api_key.label.clone(),
+                            outcome: "skipped".into(),
+                            reason: Some("budget_exhausted".into()),
+                            detail: Some("pacing queue or deadline exhausted".into()),
+                            cooldown_remaining_ms: None,
+                            score: None,
+                            score_components: None,
+                        });
+                    }
+                    excluded.push(candidate.api_key.id.clone());
+                    continue;
+                }
+            };
+            if let Some(slot) = slot {
+                slot.wait().await;
+            }
+            // Cooldowns and daily budget may have changed while this request waited.
+            if candidate.api_key.pacing_rate().is_some()
+                && (self.rate_limit.is_limited(&candidate.api_key.id)
+                    || self
+                        .usage
+                        .rpd_headroom(&candidate.api_key.id, candidate.api_key.rpd_limit)
+                        <= 0.0)
+            {
+                excluded.push(candidate.api_key.id.clone());
+                continue;
+            }
+
             real_attempts += 1;
             debug!(
                 attempt = real_attempts,
@@ -327,7 +385,13 @@ impl Executor {
                 "trying candidate"
             );
             let attempt_start = Instant::now();
-            let result = self.try_candidate(&candidate, params).await;
+            let result = self.try_candidate(&candidate, params, deadline).await;
+            let result = match result {
+                Err(ProviderError::Empty) if !params.fallback_on_empty => {
+                    Ok(providers::SearchOutput::new(vec![]))
+                }
+                other => other,
+            };
 
             match result {
                 Ok(output) => {
@@ -339,7 +403,12 @@ impl Executor {
                         .effective_slug
                         .clone()
                         .unwrap_or_else(|| candidate.provider.slug.clone());
-                    chain_parts.push(format!("{provider_slug}:ok"));
+                    let outcome = if output.results.is_empty() {
+                        "empty"
+                    } else {
+                        "ok"
+                    };
+                    chain_parts.push(format!("{provider_slug}:{outcome}"));
                     attempt_records.push(AttemptRecord {
                         provider: provider_slug.clone(),
                         success: true,
@@ -470,6 +539,7 @@ impl Executor {
         &self,
         candidate: &Candidate,
         params: &SearchParams,
+        deadline: Instant,
     ) -> Result<providers::SearchOutput, ProviderError> {
         let provider = self
             .providers
@@ -528,14 +598,35 @@ impl Executor {
         let mut last_err = ProviderError::Timeout;
         for attempt in 0..MAX_ATTEMPTS {
             if attempt > 0 {
+                if Instant::now() + RETRY_BACKOFF >= deadline {
+                    return Err(last_err);
+                }
                 tokio::time::sleep(RETRY_BACKOFF).await;
+                match self
+                    .pacer
+                    .reserve(&candidate.api_key, params.priority, deadline)
+                {
+                    Ok(Some(slot)) => slot.wait().await,
+                    Ok(None) => {}
+                    Err(()) => return Err(last_err),
+                }
                 debug!(
                     provider = candidate.provider.slug,
                     attempt, "retrying after transient error"
                 );
             }
 
+            if Instant::now() >= deadline {
+                return Err(ProviderError::Timeout);
+            }
             self.usage.reserve(&candidate.api_key.id);
+            struct InFlight<'a>(&'a UsageTracker, &'a str);
+            impl Drop for InFlight<'_> {
+                fn drop(&mut self) {
+                    self.0.complete(self.1);
+                }
+            }
+            let in_flight = InFlight(&self.usage, &candidate.api_key.id);
 
             let query = SearchQuery {
                 query: &query_text,
@@ -552,12 +643,12 @@ impl Executor {
                 freshness,
             };
             let result = tokio::time::timeout(
-                Duration::from_millis(params.timeout_ms),
+                deadline.saturating_duration_since(Instant::now()),
                 provider.search(query),
             )
             .await;
 
-            self.usage.complete(&candidate.api_key.id);
+            drop(in_flight);
 
             let storage = Arc::clone(self.catalog.storage());
             let kid = candidate.api_key.id.clone();
@@ -566,7 +657,9 @@ impl Executor {
             });
 
             let err = match result {
-                Ok(Ok(output)) if output.results.is_empty() => ProviderError::Empty,
+                Ok(Ok(output)) if output.results.is_empty() && params.fallback_on_empty => {
+                    ProviderError::Empty
+                }
                 Ok(Ok(output)) if !restricted => return Ok(output),
                 Ok(Ok(mut output)) => {
                     let before = output.results.len();
@@ -575,7 +668,7 @@ impl Executor {
                         &params.include_domains,
                         &params.exclude_domains,
                     );
-                    if output.results.is_empty() && before > 0 {
+                    if output.results.is_empty() && before > 0 && params.fallback_on_empty {
                         debug!(
                             provider = candidate.provider.slug,
                             before, "no result inside the requested domains"
@@ -687,6 +780,7 @@ mod tests {
                 label: slug.to_string(),
                 key_ref: key_ref.to_string(),
                 is_active: true,
+                max_queue_ms: None,
                 rps_limit: None,
                 rpm_limit: None,
                 rpd_limit: None,
@@ -711,6 +805,8 @@ mod tests {
             group_slug: None,
             n: 5,
             timeout_ms: 2000,
+            priority: Priority::Main,
+            fallback_on_empty: true,
             max_fallbacks: 3,
             debug: false,
             exclude_key_ids: vec![],
@@ -782,6 +878,324 @@ mod tests {
         assert_eq!(fourth.provider_slug, "staan");
         assert_eq!(fourth.fallback_chain, "staan:ok");
     }
+
+    async fn paced_executor(cap: Option<i64>) -> Executor {
+        let ex = executor(0).await;
+        let mut key = ex
+            .catalog
+            .read()
+            .await
+            .api_keys
+            .iter()
+            .find(|k| k.label == "staan")
+            .unwrap()
+            .clone();
+        let storage = ex.catalog.storage();
+        storage.soft_delete_api_key(&key.id).await.unwrap();
+        key.id = Uuid::new_v4().to_string();
+        key.rps_limit = Some(20.0);
+        key.max_queue_ms = cap;
+        storage.create_api_key(key).await.unwrap();
+        let group = storage
+            .create_group(proviz_core::models::Group {
+                id: Uuid::new_v4().to_string(),
+                slug: "paced".into(),
+                name: "paced".into(),
+                description: None,
+                is_active: true,
+                created_at: String::new(),
+            })
+            .await
+            .unwrap();
+        for key in storage
+            .list_api_keys()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.is_active)
+        {
+            storage
+                .add_group_member(&group.id, &key.id, if key.label == "staan" { 1 } else { 2 })
+                .await
+                .unwrap();
+        }
+        ex.catalog.reload().await.unwrap();
+        ex
+    }
+
+    fn paced_params() -> SearchParams {
+        SearchParams {
+            group_slug: Some("paced".into()),
+            timeout_ms: 10_000,
+            max_fallbacks: 0,
+            ..params()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sixty_main_searches_stay_on_key_with_sufficient_queue_window() {
+        let ex = Arc::new(paced_executor(Some(3200)).await);
+        let mut tasks = tokio::task::JoinSet::new();
+        let start = Instant::now();
+        for _ in 0..60 {
+            let ex = ex.clone();
+            tasks.spawn(async move { ex.search(paced_params()).await.unwrap() });
+        }
+        let mut results = vec![];
+        while let Some(r) = tasks.join_next().await {
+            results.push(r.unwrap());
+        }
+        assert!(results.iter().all(|r| r.provider_slug == "staan"));
+        assert!(start.elapsed() >= Duration::from_millis(3105));
+        assert!(start.elapsed() < Duration::from_millis(3200));
+        assert!(results.iter().all(|r| r.fallback_chain == "staan:ok"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn overflow_reaches_next_tier_without_spending_attempt_budget() {
+        let ex = Arc::new(paced_executor(Some(3000)).await);
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..120 {
+            let ex = ex.clone();
+            tasks.spawn(async move { ex.search(paced_params()).await.unwrap() });
+        }
+        let mut primary = 0;
+        let mut fallback = 0;
+        while let Some(r) = tasks.join_next().await {
+            let r = r.unwrap();
+            if r.provider_slug == "staan" {
+                primary += 1;
+            } else {
+                assert_eq!(r.provider_slug, "exa");
+                assert!(r
+                    .fallback_chain
+                    .starts_with("staan:skipped:budget_exhausted"));
+                fallback += 1;
+            }
+        }
+        assert_eq!((primary, fallback), (58, 62));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn short_deadline_overflows_without_waiting_and_null_queue_skips_as_before() {
+        for cap in [Some(3000), None, Some(0)] {
+            let ex = paced_executor(cap).await;
+            let key = ex
+                .catalog
+                .read()
+                .await
+                .api_keys
+                .iter()
+                .find(|k| k.label == "staan" && k.is_active)
+                .unwrap()
+                .clone();
+            if cap == Some(3000) {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let slots: Vec<_> = (0..20)
+                    .map(|_| ex.pacer.reserve(&key, Priority::Main, deadline).unwrap())
+                    .collect();
+                drop(slots);
+            } else {
+                for _ in 0..20 {
+                    ex.usage.reserve(&key.id);
+                    ex.usage.complete(&key.id);
+                }
+            }
+            let start = Instant::now();
+            let request = SearchParams {
+                timeout_ms: 100,
+                ..paced_params()
+            };
+            let result = ex.search(request).await.unwrap();
+            assert_eq!(result.provider_slug, "exa");
+            assert!(result
+                .fallback_chain
+                .contains("staan:skipped:budget_exhausted"));
+            assert_eq!(start.elapsed(), Duration::ZERO);
+        }
+    }
+
+    #[tokio::test]
+    async fn no_fallback_on_empty_stops_for_both_successful_empty_and_empty_error() {
+        for status in [0, 1] {
+            let mut ex = executor(0).await;
+            let mock = Arc::new(ControlledProvider::new(status));
+            ex.providers.insert("staan".into(), mock.clone());
+            let request = SearchParams {
+                fallback_on_empty: false,
+                ..params()
+            };
+            let result = ex.search(request).await.unwrap();
+            assert_eq!(result.provider_slug, "staan");
+            assert!(result.results.is_empty());
+            assert_eq!(result.fallback_chain, "staan:empty");
+            assert_eq!(result.attempts.len(), 1);
+            assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(result.log.success, Some(true));
+            assert!(ex.rate_limit.parked_keys().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn http_empty_policy_partitions_cache_and_health_exposes_queue_metrics() {
+        use axum::{
+            body::{to_bytes, Body},
+            http::{Request, StatusCode},
+            routing::{get, post},
+            Router,
+        };
+        use tower::ServiceExt;
+        let mut ex = paced_executor(Some(3000)).await;
+        let mock = Arc::new(ControlledProvider::new(0));
+        ex.providers.insert("staan".into(), mock.clone());
+        let mut config = crate::config::Config::from_env();
+        config.database_url = None;
+        config.database_path = ":memory:".into();
+        let (_, mut state) = crate::app::build_app(config).await.unwrap();
+        state.catalog = ex.catalog.clone();
+        state.storage = ex.catalog.storage().clone();
+        state.rate_limit = ex.rate_limit.clone();
+        state.usage = ex.usage.clone();
+        state.no_cache_providers = Default::default();
+        state.executor = Arc::new(ex);
+        let key = state
+            .catalog
+            .read()
+            .await
+            .api_keys
+            .iter()
+            .find(|k| k.label == "staan" && k.is_active)
+            .unwrap()
+            .clone();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let first = state
+            .executor
+            .pacer
+            .reserve(&key, Priority::Main, deadline)
+            .unwrap();
+        let waiting = state
+            .executor
+            .pacer
+            .reserve(&key, Priority::Main, deadline)
+            .unwrap();
+        let router = Router::new()
+            .route("/search", post(crate::handlers::search::handle_search))
+            .route("/health", get(crate::handlers::health::handle_health))
+            .with_state(state);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let health: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let keys = health["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["slug"] == "staan")
+            .unwrap()["keys"]
+            .as_array()
+            .unwrap();
+        let metrics = keys.iter().find(|k| k["id"] == key.id).unwrap();
+        assert_eq!(metrics["queue_depth"], 1);
+        assert_eq!(metrics["queued"], 1);
+        assert!(metrics["next_slot_delay_ms"].as_u64().unwrap() > 0);
+        assert!(metrics["wait_ms"].as_u64().unwrap() > 0);
+        assert_eq!(metrics["overflow"], 0);
+        drop((first, waiting));
+        for (fallback, provider, empty, cached) in [
+            (false, "staan", true, false),
+            (true, "exa", false, false),
+            (false, "staan", true, true),
+        ] {
+            let body =
+                serde_json::json!({"query":"test", "group":"paced", "fallback_on_empty":fallback});
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/search")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            assert_eq!(body["results"].as_array().unwrap().is_empty(), empty);
+            assert_eq!(body["meta"]["provider"], provider);
+            assert_eq!(body["meta"]["cache_hit"], cached);
+            if !fallback && !cached {
+                assert_eq!(body["meta"]["fallback_chain"], "staan:empty");
+            }
+        }
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn disabling_empty_fallback_still_falls_back_on_provider_errors() {
+        for status in [401, 402, 429, 503] {
+            let mut ex = executor(0).await;
+            ex.providers
+                .insert("staan".into(), Arc::new(ControlledProvider::new(status)));
+            let result = ex
+                .search(SearchParams {
+                    fallback_on_empty: false,
+                    ..params()
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.provider_slug, "exa");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn total_search_deadline_bounds_provider_timeout_and_retry() {
+        let mut ex = paced_executor(Some(3000)).await;
+        ex.providers.insert(
+            "staan".into(),
+            Arc::new(ControlledProvider {
+                delay_ms: 1000,
+                ..ControlledProvider::new(503)
+            }),
+        );
+        let start = Instant::now();
+        assert!(ex
+            .search(SearchParams {
+                timeout_ms: 100,
+                ..paced_params()
+            })
+            .await
+            .is_err());
+        assert!(start.elapsed() <= Duration::from_millis(100));
+        assert_eq!(
+            ex.usage.rps_headroom(
+                &ex.catalog
+                    .read()
+                    .await
+                    .api_keys
+                    .iter()
+                    .find(|k| k.label == "staan" && k.is_active)
+                    .unwrap()
+                    .id,
+                Some(20.0)
+            ),
+            0.95
+        );
+    }
+
     /// Free-engine stand-in: ignores `include_domains`, records the query text it was
     /// sent, answers pages on and off the requested domains.
     /// (query text, include_domains, freshness) of one call.

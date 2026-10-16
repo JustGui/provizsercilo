@@ -24,6 +24,8 @@ pub struct KeyHealth {
     pub state: &'static str,
     pub cooldown_remaining_ms: u64,
     pub rpm_headroom: f64,
+    #[serde(flatten)]
+    pub queue: crate::pacing::QueueMetrics,
 }
 
 pub async fn handle_health(
@@ -51,6 +53,7 @@ pub async fn handle_health(
                     state: state_str,
                     cooldown_remaining_ms: cooldown_ms,
                     rpm_headroom: state.usage.rpm_headroom(&k.id, k.rpm_limit),
+                    queue: state.executor.pacer.metrics(&k.id),
                 }
             })
             .collect();
