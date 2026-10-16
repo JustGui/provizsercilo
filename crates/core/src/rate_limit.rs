@@ -81,6 +81,7 @@ struct Cooldown {
     generation: u64,
     probe_generation: u64,
     requires_probe: bool,
+    auth_episode: bool,
     transient_cooldowns: u32,
     probe_timeouts: u32,
 }
@@ -96,6 +97,7 @@ impl Cooldown {
             generation: 0,
             probe_generation: 0,
             requires_probe: false,
+            auth_episode: false,
             transient_cooldowns: 0,
             probe_timeouts: 0,
         }
@@ -171,7 +173,8 @@ impl RateLimitState {
         self
     }
 
-    // Atomically check and record auth failures, including concurrent user calls.
+    // Called while holding the cooldown entry: record only the first auth error
+    // of an episode, which ends when a successful probe removes the cooldown.
     fn auth_cooldown_secs(&self, api_key_id: &str) -> u64 {
         let mut history = self.auth_history.entry(api_key_id.to_string()).or_default();
         let now = Instant::now();
@@ -222,17 +225,25 @@ impl RateLimitState {
             }
             entry.0 = 0;
         }
-        let seconds = if error_type == ErrorType::Billing {
-            self.billing_cooldown_secs
-        } else if error_type == ErrorType::Auth {
-            self.auth_cooldown_secs(api_key_id)
-        } else {
-            error_type.cooldown_secs()
-        };
         let mut entry = self
             .cooldowns
             .entry(api_key_id.to_string())
             .or_insert_with(|| Cooldown::new(error_type));
+        if error_type == ErrorType::Auth && entry.auth_episode {
+            // In-flight failures belong to the current episode, even after its
+            // deadline passes or billing takes precedence over the auth reason.
+            // Still invalidate a probe racing this new failure.
+            entry.generation += 1;
+            return true;
+        }
+        let seconds = if error_type == ErrorType::Billing {
+            self.billing_cooldown_secs
+        } else if error_type == ErrorType::Auth {
+            entry.auth_episode = true;
+            self.auth_cooldown_secs(api_key_id)
+        } else {
+            error_type.cooldown_secs()
+        };
         if !entry.is_limited() {
             // Count cooldown episodes, not concurrent failures in the same one.
             // Keep the history after expiry until a user call or probe succeeds.
@@ -357,7 +368,8 @@ impl RateLimitState {
             e.probing = false;
             return; // A newer user-call failure keeps its own reason and deadline.
         }
-        if result == Err(ErrorType::Auth) {
+        if result == Err(ErrorType::Auth) && !e.auth_episode {
+            e.auth_episode = true;
             self.auth_history
                 .entry(key_id.to_string())
                 .or_default()
@@ -614,12 +626,54 @@ mod cooldown_tests {
     }
 
     #[test]
-    fn concurrent_auth_errors_extend_short_cooldown_to_full() {
+    fn concurrent_auth_errors_in_one_episode_keep_short_cooldown() {
         let state = RateLimitState::default();
         state.report_success("key");
         state.report_error("key", ErrorType::Auth);
+        let deadline = state.cooldowns.get("key").unwrap().until;
+        let first_error = state.auth_history.get("key").unwrap().last_auth_error;
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                scope.spawn(|| state.report_error("key", ErrorType::Auth));
+            }
+        });
+        assert_delay(&state, 30);
+        assert_eq!(state.cooldowns.get("key").unwrap().until, deadline);
+        // Expiry and a late success do not end a probe-gated episode.
+        expire(&state, "key");
+        state.report_success("key");
+        state.report_error("key", ErrorType::Auth);
+        assert_eq!(state.cooldown_remaining_ms("key"), 0);
+        assert!(state.is_limited("key"));
+        assert_eq!(
+            state.auth_history.get("key").unwrap().last_auth_error,
+            first_error
+        );
+    }
+
+    #[test]
+    fn auth_after_release_within_repeat_window_uses_full_cooldown() {
+        let state = RateLimitState::default();
+        state.report_success("key");
+        state.report_error("key", ErrorType::Auth);
+        let token = state.begin_probe("key", true).unwrap();
+        state.finish_probe("key", token, Ok(()), 60, 21600, 600);
+        assert!(!state.is_limited("key"));
         state.report_error("key", ErrorType::Auth);
         assert_delay(&state, 300);
+    }
+
+    #[test]
+    fn auth_after_release_outside_repeat_window_uses_short_cooldown() {
+        let state = RateLimitState::default();
+        state.report_success("key");
+        state.report_error("key", ErrorType::Auth);
+        let token = state.begin_probe("key", true).unwrap();
+        state.finish_probe("key", token, Ok(()), 60, 21600, 600);
+        state.auth_history.get_mut("key").unwrap().last_auth_error =
+            Some(Instant::now() - Duration::from_secs(601));
+        state.report_error("key", ErrorType::Auth);
+        assert_delay(&state, 30);
     }
 
     #[test]
@@ -674,10 +728,34 @@ mod cooldown_tests {
         state.report_success("key");
         let token = state.begin_probe("key", true).unwrap();
         state.finish_probe("key", token, Err(ErrorType::Auth), 60, 21600, 600);
+        let first_error = state.auth_history.get("key").unwrap().last_auth_error;
+        let token = state.begin_probe("key", true).unwrap();
+        state.finish_probe("key", token, Err(ErrorType::Auth), 60, 21600, 600);
+        assert_eq!(
+            state.auth_history.get("key").unwrap().last_auth_error,
+            first_error
+        );
         let token = state.begin_probe("key", true).unwrap();
         state.finish_probe("key", token, Ok(()), 60, 21600, 600);
         state.report_error("key", ErrorType::Auth);
         assert_delay(&state, 300);
+    }
+
+    #[test]
+    fn billing_reason_does_not_start_a_second_auth_episode() {
+        let state = RateLimitState::default().with_billing_cooldown(42);
+        state.report_success("key");
+        state.report_error("key", ErrorType::Auth);
+        let first_error = state.auth_history.get("key").unwrap().last_auth_error;
+        state.report_error("key", ErrorType::Billing);
+        let deadline = state.cooldowns.get("key").unwrap().until;
+        state.report_error("key", ErrorType::Auth);
+        assert_eq!(state.cooldown_reason("key"), Some(ErrorType::Billing));
+        assert_eq!(state.cooldowns.get("key").unwrap().until, deadline);
+        assert_eq!(
+            state.auth_history.get("key").unwrap().last_auth_error,
+            first_error
+        );
     }
 
     #[test]
