@@ -64,14 +64,15 @@ Brings up ProvizSercilo, SearXNG, and the DDG bridge together.
 | `CACHE_TTL_SECS` | `3600` | Query cache TTL; `0` disables cache |
 | `DOC_CACHE_TTL_SECS` | `21600` (6h) | URL-keyed enrichment content cache TTL — separate from the query cache, reused across different queries that surface the same page |
 | `MAX_FALLBACKS` | `3` | Maximum provider fallback attempts per request |
-| `TRANSIENT_FAILURES_BEFORE_COOLDOWN` | `3` | Consecutive transient failures (timeout, network/provider error, 5xx) before a key is put on cooldown; a success resets the count. Empty results and request errors never count. Rate limits, auth and billing refusals park the key at once. `1` = cool down on the first failure (old behaviour) |
+| `TRANSIENT_FAILURES_BEFORE_COOLDOWN` | `3` | Consecutive transient failures (timeout, network/provider error, 5xx) before a key is put on cooldown; a success resets the count. The first cooldown expires normally; a second consecutive cooldown requires a probe. Empty results and request errors never count. Rate limits, auth and billing refusals start cooldowns at once. `1` = cool down on the first failure |
 | `BILLING_COOLDOWN_SECS` | `21600` | Initial parking period for billing/quota refusals before a probe is due |
 | `PROBE_QUERY` | `test` | Fixed query used for key probes (`n=1`, no enrichment or user query) |
 | `PROBE_INTERVAL_SECS` | `30` | Background scan interval for due probes |
 | `PROBE_CONCURRENCY` | `4` | Maximum simultaneous probes, shared by background and admin requests |
-| `PROBE_TIMEOUT_MS` | `5000` | Deadline for one probe |
+| `PROBE_TIMEOUT_MS` | `5000` | Deadline for one probe; only the second and subsequent consecutive probe timeouts increase failure count/backoff |
 | `PROBE_BACKOFF_SECS` | `60` | Initial delay after a failed probe; doubles on each failure |
-| `PROBE_MAX_BACKOFF_SECS` | `21600` | Cap on failed-probe backoff |
+| `PROBE_MAX_BACKOFF_SECS` | `21600` | Cap on failed-probe backoff for billing/auth parking |
+| `PROBE_MAX_BACKOFF_TRANSIENT_SECS` | `600` | Cap on failed-probe backoff for transient-origin parking |
 | `LOG_LEVEL` | `INFO` | `TRACE` \| `DEBUG` \| `INFO` \| `WARN` \| `ERROR` |
 | `LOG_FORMAT` | `json` | `json` \| `pretty` |
 
@@ -187,12 +188,25 @@ storm for invalid input. The key remains eligible for other requests.
 
 Billing refusals (402, 433, and credit/quota/payment messages in 400/403 bodies)
 park the key with reason `billing`, emit a WARN and a `billing` rate event.
-401/other 403 responses park it as `auth`. Repeated transient failures and 429s
-also start cooldowns. Every reactive cooldown, including short rate-limit
-cooldowns, requires a successful probe before the key returns to rotation;
-elapsed time only makes a background probe due. A decoded empty answer also
+401/other 403 responses park it as `auth`. Rate-limit cooldowns (`rps`: 5 s,
+`rpm`: 60 s, `rpd`: 3600 s) release on expiry without a probe. Transient failures
+start a cooldown after `TRANSIENT_FAILURES_BEFORE_COOLDOWN` consecutive failures:
+the first timeout/error cooldown releases on expiry (30 s / 60 s). A second
+consecutive transient cooldown requires a successful probe before reuse, as do
+billing and auth cooldowns. Concurrent failures during one cooldown do not count
+as additional cooldown episodes. A successful user request, including an empty
+answer, resets the transient failure and cooldown history; a late user success
+does not release an already probe-gated key.
+
+For probe-gated keys, expiry makes a background probe due. A decoded empty answer
 counts as a successful probe, since it confirms that the API accepted the call.
-Failed probes leave the key parked with exponential backoff. Probes respect
+Failed probes use exponential backoff, capped by `PROBE_MAX_BACKOFF_SECS` for
+billing/auth and `PROBE_MAX_BACKOFF_TRANSIENT_SECS` for transient-origin parking.
+A billing/auth refusal during a probe switches to billing/auth parking. The first
+consecutive probe timeout leaves the failure count and deadline unchanged, allowing
+a retry on the next scan when due; only the second and subsequent consecutive
+timeouts increase backoff. Any non-timeout response resets the timeout streak.
+Probes respect
 configured key budgets but do not create user-search log rows or search metrics.
 Their response bodies and resolved credentials are never logged.
 
@@ -204,7 +218,8 @@ Their response bodies and resolved credentials are never logged.
 
 After replenishing credits or repairing credentials, use
 `POST /admin/keys/<id>/probe` to test immediately. The response includes `success`
-and `error_type`; a failed probe returns `success: false` and keeps the key parked.
+and `error_type`; an unsuccessful probe returns `success: false`. Probe-gated keys
+stay parked until a probe succeeds.
 Overlapping probes or a full probe pool return 409; inactive/missing keys return
 404. Both endpoints use the existing admin bearer authentication.
 
@@ -212,8 +227,8 @@ Failed searches write `success=false`, `error_type` and `fallback_chain` to the
 existing search log (`ps_search_log` on PostgreSQL). Audit rows contain the query
 hash, never the query text or provider error body. A `no_providers_available` 503
 includes `Retry-After` in seconds: the shortest remaining candidate cooldown,
-rounded up, or 1 when no cooldown deadline is available. A due key still requires
-a probe, so the hint is not a guarantee of availability.
+rounded up, or 1 when no cooldown deadline is available. A due probe-gated key
+still requires a probe, so the hint is not a guarantee of availability.
 
 Cooldowns, parking state and probe backoff are in memory, like rate budgets; a
 restart clears them. All probe timing/concurrency environment values must be
