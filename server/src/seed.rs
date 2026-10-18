@@ -31,6 +31,15 @@ struct ProviderDef {
 //   PATCH /admin/providers/ddg  { "is_active": false }
 static PROVIDERS: &[(&str, ProviderDef)] = &[
     (
+        "deepseek",
+        ProviderDef {
+            name: "DeepSeek",
+            priority: 18,
+            key_prefix: "DEEPSEEK_KEY",
+            no_cache: false,
+        },
+    ),
+    (
         "ddg-yandex",
         ProviderDef {
             name: "DDG Bridge (Yandex backend)",
@@ -188,7 +197,7 @@ pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
 
     for (slug, def) in PROVIDERS {
         // Collect key refs for this provider (index 1, 2, 3…).
-        let key_refs: Vec<(String, String)> = (1..=9)
+        let mut key_refs: Vec<(String, String)> = (1..=9)
             .filter_map(|i| {
                 let env_name = format!("{}_{}", def.key_prefix, i);
                 let val = std::env::var(&env_name).unwrap_or_default();
@@ -199,6 +208,15 @@ pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
                 }
             })
             .collect();
+
+        // Also accept the conventional single-key name used by DeepSeek SDKs.
+        if *slug == "deepseek" {
+            if let Ok(value) = std::env::var("DEEPSEEK_API_KEY") {
+                if !value.is_empty() && !key_refs.iter().any(|(_, v)| v == &value) {
+                    key_refs.push(("DEEPSEEK_API_KEY".into(), value));
+                }
+            }
+        }
 
         if key_refs.is_empty() {
             continue; // No keys configured — skip entirely.
@@ -247,19 +265,57 @@ pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
                 label: format!("{}-{}", slug, i + 1),
                 key_ref: key_ref.clone(),
                 is_active: true,
-                max_queue_ms: None,
-                rps_limit: None,
+                max_queue_ms: (*slug == "deepseek").then_some(3000),
+                rps_limit: (*slug == "deepseek").then_some(5.0),
                 rpm_limit: None,
                 rpd_limit: None,
                 last_used_at: None,
                 created_at: String::new(),
-                cost_per_mille: None,
-                currency: None,
+                cost_per_mille: (*slug == "deepseek").then_some(0.75),
+                currency: (*slug == "deepseek").then(|| "USD".into()),
             };
             match storage.create_api_key(key).await {
                 Ok(_) => info!(slug, key_ref, "auto-registered key"),
                 Err(e) => warn!(slug, key_ref, error = %e, "failed to add key"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proviz_core::storage::StorageBackend;
+
+    #[tokio::test]
+    async fn deepseek_single_key_is_seeded_idempotently_as_a_reference() {
+        let original = std::env::var("DEEPSEEK_API_KEY").ok();
+        std::env::set_var("DEEPSEEK_API_KEY", "deepseek-seed-test-only");
+        let storage = storage_sqlite::Storage::open(std::path::Path::new(":memory:")).unwrap();
+        seed_from_env(&storage).await;
+        seed_from_env(&storage).await;
+        match original {
+            Some(value) => std::env::set_var("DEEPSEEK_API_KEY", value),
+            None => std::env::remove_var("DEEPSEEK_API_KEY"),
+        }
+        let provider = storage
+            .list_providers()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|p| p.slug == "deepseek")
+            .unwrap();
+        let keys: Vec<_> = storage
+            .list_api_keys()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.provider_id == provider.id && k.key_ref == "DEEPSEEK_API_KEY")
+            .collect();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].rps_limit, Some(5.0));
+        assert_eq!(keys[0].max_queue_ms, Some(3000));
+        assert_eq!(keys[0].cost_per_mille, Some(0.75));
+        assert_eq!(keys[0].currency.as_deref(), Some("USD"));
     }
 }

@@ -38,7 +38,9 @@ pub struct AppState {
     pub no_cache_providers: Arc<HashSet<String>>,
 }
 
-pub fn build_providers() -> HashMap<String, Arc<dyn SearchProvider>> {
+pub fn build_providers(
+    deepseek_localizations: HashMap<String, std::net::IpAddr>,
+) -> HashMap<String, Arc<dyn SearchProvider>> {
     let mut map: HashMap<String, Arc<dyn SearchProvider>> = HashMap::new();
     map.insert(
         "brave".to_string(),
@@ -98,6 +100,13 @@ pub fn build_providers() -> HashMap<String, Arc<dyn SearchProvider>> {
             )),
         );
     }
+    map.insert(
+        "deepseek".to_string(),
+        Arc::new(
+            providers::deepseek::DeepSeekProvider::default()
+                .with_country_localizations(deepseek_localizations),
+        ),
+    );
     map
 }
 
@@ -113,10 +122,17 @@ pub fn build_content_providers() -> HashMap<String, Arc<dyn ContentProvider>> {
         "parallel".to_string(),
         Arc::new(providers::parallel::ParallelProvider::default()),
     );
+    map.insert(
+        "deepseek".to_string(),
+        Arc::new(providers::deepseek::DeepSeekProvider::default()),
+    );
     map
 }
 
 pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
+    let deepseek_localizations =
+        providers::deepseek::parse_country_localizations(&config.deepseek_localization_ips)
+            .map_err(anyhow::Error::msg)?;
     let storage: Arc<dyn StorageBackend> = if let Some(ref url) = config.database_url {
         tracing::info!(url = %url, "connecting to PostgreSQL");
         Arc::new(storage_postgres::PgStorage::connect(url).await?)
@@ -161,7 +177,7 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
 
     let selector = Arc::new(Selector::new(rate_limit.clone(), usage.clone(), profiles));
 
-    let providers = build_providers();
+    let providers = build_providers(deepseek_localizations);
     let config = Arc::new(config);
 
     let executor = Arc::new(
@@ -285,6 +301,18 @@ mod admin_probe_tests {
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn malformed_localization_config_fails_before_opening_storage() {
+        let mut config = Config::from_env();
+        config.deepseek_localization_ips = r#"{"fr":"not-an-ip"}"#.into();
+        let result = build_app(config).await;
+        assert!(result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("DEEPSEEK_LOCALIZATION_IPS"));
+    }
 
     #[tokio::test]
     async fn parked_key_and_probe_routes_require_admin_authentication() {
