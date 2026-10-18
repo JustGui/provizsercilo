@@ -28,6 +28,7 @@ Self-hosted Rust HTTP service that acts as a smart search-engine router. Callers
 | `decodo` | API key | Basic-auth token |
 | `you-com` | API key | Supports `full_content` enrichment; also in the `/contents` extractor pool |
 | `parallel` | API key | Also in the `/contents` extractor pool |
+| `deepseek` | API key | Search + Markdown enrichment; Fetch in `/contents`; `DEEPSEEK_API_KEY` or `DEEPSEEK_KEY_1`…`9` |
 | `searxng` | URL | Self-hosted; supports multiple instances |
 | `ddg` | URL | Requires the included Python bridge |
 
@@ -128,7 +129,7 @@ Optional fields — fetch and rerank result pages in the same call instead of sc
 {
   "query": "vector database comparison",
   "extra_snippets": true,       // semantically scored chunks; staan only
-  "full_content": "markdown",   // "markdown" | "html" | "text"; staan + tavily + you-com
+  "full_content": "markdown",   // "markdown" | "html" | "text"; staan + tavily + you-com + deepseek
   "max_snippets": 5,            // extra_snippets only, default 3
   "min_score": 0.2,             // extra_snippets only, default 0.1
   "include_domains": ["qdrant.tech", "weaviate.io"],
@@ -153,10 +154,56 @@ Each result gains `full_content: {text, format, length}` and/or `extra_snippets:
 
 `include_domains` works on every provider: engines without a native field (SearXNG, the DDG bridge, Brave, Mojeek, Serper, Exa) get it as OR-ed `site:` operators (at most 6) and every answer is filtered to the domains. Freshness is mapped per provider. See [docs/search-operators.md](docs/search-operators.md) for the mapping and the measured operator support of each free engine.
 
+### DeepSeek Search & Fetch
+
+[API documentation](https://api-docs.deepseek.com/guides/search/). Export `DEEPSEEK_API_KEY` (or numbered `DEEPSEEK_KEY_1`…`9`) before starting the server; startup seeds the `deepseek` provider and key references. The server reads exported environment variables; Docker Compose loads `.env`.
+
+Search uses `/v1/tools/search`, caps `n` at 50, maps `language` to `lang:` and freshness to `after:`/`before:`. Domain filters use the router’s existing `site:` operators and result filtering. The final query, including operators, must fit 128 Unicode characters; longer or blank queries return a request error. DeepSeek translates the request’s `country` through the server’s optional `DEEPSEEK_LOCALIZATION_IPS` map (see below).
+
+`full_content` enables `need_content`; missing bodies remain absent. Fetch uses `/v1/tools/fetch`, one URL per upstream request. Both return Markdown, stamped as `markdown` even if another format was requested. Fetch 403/404 responses are per-page misses eligible for fallback. Search and Fetch each have an upstream limit of 5 QPS; new keys seed a 5 RPS limit and a 3-second search queue before fallback. The adapter spaces calls by at least 210 ms across its keys, with independent Search and Fetch gates. Limits are account-wide, so deployments sharing an account must coordinate their combined traffic. Seeded cost is $0.75 per 1,000 calls; existing request accounting is an estimate; `/contents` does not persist per-call costs.
+
+For a live comparison with Staan, export both keys and run:
+
+```bash
+cargo run -p providers --example compare_deepseek_staan -- "Bardella est accusé d'antisémitisme"
+```
+
+Add `--full-content` after the query to compare enrichment too, or `--localization 86.196.134.124` to pass an explicit DeepSeek localization IP. The explicit IP option overrides the country map for that example run. This prints normalized SERPs, timings, exact and fragment-free URL overlap, and a DeepSeek Fetch smoke test without printing credentials. See the [French news comparison report](docs/deepseek-staan-comparison-2026-10-18.md) for measured results and limitations.
+
+### Country normalization for DeepSeek
+
+Clients keep using the shared API, for example:
+
+```json
+{"query":"Bardella est accusé d'antisémitisme","language":"fr","country":"fr"}
+```
+
+Configure representative IP hints on the server, independently of clients:
+
+```sh
+DEEPSEEK_LOCALIZATION_IPS='{"fr":"86.196.134.124"}'
+```
+
+DeepSeek then receives `lang:fr` and `localization: "86.196.134.124"`. Country keys are trimmed and case-insensitive two-letter codes; use ISO 3166-1 alpha-2 codes such as `fr`, `gb`, and `us`. IPv4 and IPv6 addresses are accepted. Invalid JSON, invalid IPs, malformed country keys or duplicate normalized country keys prevent startup. Restart after changing the mapping. No mapping is built in: maintain representative IPs whose geolocation you have checked, since addresses and geolocation databases can change. This is a ranking hint, not a geographic restriction or a proxy connection.
+
+An absent or unmapped country omits `localization`; it never borrows another country’s IP or infers a country from language. The existing cache already partitions results by country. For direct adapter callers, `with_localization` overrides the map; the HTTP API continues to expose only the existing `country` field.
+
+Current adapter mappings (country remains a best-effort hint across fallback providers):
+
+| Providers | Mapping of `country` |
+| --- | --- |
+| Brave, Mojeek, You.com | `country` |
+| Serper, Decodo | `gl` |
+| DDG bridge backends | country combined with language into a ddgs region |
+| Staan | language/country mapped to `fr-fr`, `en-us`, or `de-de` only |
+| DeepSeek | configured country IP → `localization` |
+| Exa, Tavily, Parallel, SearXNG | not currently mapped by these adapters |
+
+
 ### Page content extraction
 
 Standalone endpoint for pulling clean page bodies — hand it a batch of URLs, it
-routes them through a pool of extraction-capable providers (You.com, Parallel)
+routes them through a pool of extraction-capable providers (You.com, Parallel, DeepSeek)
 with per-URL fallback, and reuses the same URL-keyed cache the search enrichment
 path fills.
 

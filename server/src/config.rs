@@ -3,6 +3,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub port: u16,
+    /// JSON country-code to IP map used only by DeepSeek Search.
+    pub deepseek_localization_ips: String,
     /// PostgreSQL URL (postgres://…). When set, takes precedence over database_path.
     pub database_url: Option<String>,
     pub database_path: PathBuf,
@@ -96,6 +98,10 @@ impl Config {
 
         Self {
             port,
+            deepseek_localization_ips: std::env::var("DEEPSEEK_LOCALIZATION_IPS")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "{}".into()),
             database_url,
             database_path,
             profiles_path,

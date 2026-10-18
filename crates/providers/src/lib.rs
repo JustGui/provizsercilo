@@ -1,6 +1,7 @@
 pub mod brave;
 pub mod ddg_bridge;
 pub mod decodo;
+pub mod deepseek;
 pub mod exa;
 pub mod mojeek;
 pub mod operators;
