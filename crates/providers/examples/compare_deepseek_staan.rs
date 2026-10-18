@@ -19,10 +19,13 @@ async fn main() {
                 .parse()
                 .expect("--localization requires a valid IP address")
         });
-    let country_ips = providers::deepseek::parse_country_localizations(
-        &std::env::var("DEEPSEEK_LOCALIZATION_IPS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("valid DEEPSEEK_LOCALIZATION_IPS");
+    let mut country_ips = providers::deepseek::default_country_localizations();
+    country_ips.extend(
+        providers::deepseek::parse_country_localizations(
+            &std::env::var("DEEPSEEK_LOCALIZATION_IPS").unwrap_or_else(|_| "{}".into()),
+        )
+        .expect("valid DEEPSEEK_LOCALIZATION_IPS"),
+    );
     let country_localization = country_ips.get("fr").copied();
     let deepseek =
         providers::deepseek::DeepSeekProvider::default().with_country_localizations(country_ips);

@@ -178,15 +178,15 @@ Clients keep using the shared API, for example:
 {"query":"Bardella est accusé d'antisémitisme","language":"fr","country":"fr"}
 ```
 
-Configure representative IP hints on the server, independently of clients:
+Bundled defaults cover 250 countries and territories, so `country` works without additional configuration. Override individual IP hints on the server when needed:
 
 ```sh
 DEEPSEEK_LOCALIZATION_IPS='{"fr":"86.196.134.124"}'
 ```
 
-DeepSeek then receives `lang:fr` and `localization: "86.196.134.124"`. Country keys are trimmed and case-insensitive two-letter codes; use ISO 3166-1 alpha-2 codes such as `fr`, `gb`, and `us`. IPv4 and IPv6 addresses are accepted. Invalid JSON, invalid IPs, malformed country keys or duplicate normalized country keys prevent startup. Restart after changing the mapping. No mapping is built in: maintain representative IPs whose geolocation you have checked, since addresses and geolocation databases can change. This is a ranking hint, not a geographic restriction or a proxy connection.
+DeepSeek then receives `lang:fr` and `localization: "86.196.134.124"`. Country keys are trimmed and case-insensitive two-letter codes; use ISO 3166-1 alpha-2 codes such as `fr`, `gb`, and `us`. IPv4 and IPv6 addresses are accepted. Invalid JSON, invalid IPs, malformed country keys or duplicate normalized country keys prevent startup. Restart after changing the mapping. Resolution is **configured country override → bundled country IP → omit localization**. Overrides merge into the defaults. The bundled snapshot is generated from the PDDL-licensed `sapics/ip-location-db` user-country dataset; its provenance, checksum and refresh procedure are documented in [the data README](crates/providers/data/README.md). Geolocation can change or differ from DeepSeek’s own database. This is a ranking hint, not a geographic restriction or a proxy connection.
 
-An absent or unmapped country omits `localization`; it never borrows another country’s IP or infers a country from language. The existing cache already partitions results by country. For direct adapter callers, `with_localization` overrides the map; the HTTP API continues to expose only the existing `country` field.
+An absent or unknown country omits `localization`; it never borrows another country’s IP or infers a country from language. The existing cache already partitions results by country. For direct adapter callers, `with_localization` overrides the map; the HTTP API continues to expose only the existing `country` field.
 
 Current adapter mappings (country remains a best-effort hint across fallback providers):
 
@@ -196,7 +196,7 @@ Current adapter mappings (country remains a best-effort hint across fallback pro
 | Serper, Decodo | `gl` |
 | DDG bridge backends | country combined with language into a ddgs region |
 | Staan | language/country mapped to `fr-fr`, `en-us`, or `de-de` only |
-| DeepSeek | configured country IP → `localization` |
+| DeepSeek | country override or bundled IP → `localization` |
 | Exa, Tavily, Parallel, SearXNG | not currently mapped by these adapters |
 
 
