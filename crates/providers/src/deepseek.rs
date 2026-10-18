@@ -23,7 +23,7 @@ impl Default for DeepSeekProvider {
             client: build_client(30),
             base_url: "https://api.deepseek.com".into(),
             localization: None,
-            country_localizations: std::collections::HashMap::new(),
+            country_localizations: default_country_localizations(),
             search_next_request: tokio::sync::Mutex::new(tokio::time::Instant::now()),
             fetch_next_request: tokio::sync::Mutex::new(tokio::time::Instant::now()),
         }
@@ -114,6 +114,18 @@ fn markdown(text: String) -> Option<FullContent> {
     })
 }
 
+/// Small offline snapshot generated from sapics/ip-location-db; provenance and
+/// checksum are embedded in the JSON. No geolocation service is called at runtime.
+pub fn default_country_localizations() -> std::collections::HashMap<String, std::net::IpAddr> {
+    #[derive(Deserialize)]
+    struct Snapshot {
+        country_ips: std::collections::HashMap<String, std::net::IpAddr>,
+    }
+    let snapshot: Snapshot = serde_json::from_str(include_str!("../data/country_ips.json"))
+        .expect("bundled country IP snapshot must be valid");
+    snapshot.country_ips
+}
+
 /// Operator-maintained country-to-IP hints; no IP-geolocation lookup is needed
 /// at request time. Reject malformed config rather than silently dropping it.
 pub fn parse_country_localizations(
@@ -147,7 +159,7 @@ impl DeepSeekProvider {
         mut self,
         countries: std::collections::HashMap<String, std::net::IpAddr>,
     ) -> Self {
-        self.country_localizations = countries;
+        self.country_localizations.extend(countries);
         self
     }
 
@@ -404,7 +416,7 @@ mod tests {
         for (country, expected) in [
             (Some("FR"), Some("86.196.134.124")),
             (Some(" us "), Some("8.8.8.8")),
-            (Some("de"), None),
+            (Some("zz"), None),
             (None, None),
         ] {
             q.country = country;
@@ -422,6 +434,47 @@ mod tests {
         assert_eq!(
             provider.localized_search_request(&q).unwrap().localization,
             Some("1.1.1.1".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn bundled_defaults_survive_partial_overrides_and_empty_config() {
+        let defaults = default_country_localizations();
+        assert!(defaults.len() >= 200);
+        for (country, ip) in &defaults {
+            assert_eq!(country.len(), 2);
+            assert!(country.bytes().all(|b| b.is_ascii_lowercase()));
+            let std::net::IpAddr::V4(ip) = ip else {
+                panic!("expected IPv4");
+            };
+            assert!(
+                !ip.is_private()
+                    && !ip.is_loopback()
+                    && !ip.is_multicast()
+                    && !ip.is_unspecified()
+                    && !ip.is_link_local()
+            );
+        }
+        let provider = DeepSeekProvider::default()
+            .with_country_localizations(
+                parse_country_localizations(r#"{"fr":"86.196.134.124"}"#).unwrap(),
+            )
+            .with_country_localizations(parse_country_localizations("{}").unwrap());
+        let mut q = query("Bardella");
+        assert_eq!(
+            provider.localized_search_request(&q).unwrap().localization,
+            Some("86.196.134.124".parse().unwrap())
+        );
+        q.country = Some("GB");
+        assert_eq!(
+            provider.localized_search_request(&q).unwrap().localization,
+            defaults.get("gb").copied()
+        );
+        let provider = DeepSeekProvider::default();
+        q.country = Some("fr");
+        assert_eq!(
+            provider.localized_search_request(&q).unwrap().localization,
+            defaults.get("fr").copied()
         );
     }
 
