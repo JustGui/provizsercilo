@@ -1,0 +1,60 @@
+{"engine": "brave", "route": "direct", "mode": "random", "query": 0, "status": [429], "results": 0, "error": null, "seconds": 0.54}
+{"engine": "brave", "route": "direct", "mode": "random", "query": 1, "status": [429], "results": 0, "error": null, "seconds": 0.21}
+{"engine": "brave", "route": "direct", "mode": "random", "query": 2, "status": [429], "results": 0, "error": null, "seconds": 0.21}
+{"engine": "yahoo", "route": "direct", "mode": "random", "query": 0, "status": [200], "results": 0, "error": null, "seconds": 1.11}
+{"engine": "brave", "route": "direct", "mode": "chrome_146", "query": 0, "status": [429], "results": 0, "error": null, "seconds": 0.25}
+{"engine": "brave", "route": "direct", "mode": "firefox_140", "query": 0, "status": [429], "results": 0, "error": null, "seconds": 0.21}
+{"engine": "brave", "route": "direct", "mode": "httpx-h1", "query": 0, "status": [429], "results": 0, "error": null, "seconds": 0.31}
+{"engine": "yandex", "route": "direct", "mode": "random", "query": 0, "status": [], "results": 0, "error": "KeyError", "seconds": 0.0}
+{"engine": "yandex", "route": "direct", "mode": "random", "query": 1, "status": [], "results": 0, "error": "KeyError", "seconds": 0.0}
+{"engine": "yandex", "route": "direct", "mode": "random", "query": 2, "status": [], "results": 0, "error": "KeyError", "seconds": 0.0}
+{"engine": "yandex", "route": "direct", "mode": "chrome_146", "query": 0, "status": [], "results": 0, "error": "KeyError", "seconds": 0.0}
+{"engine": "yandex", "route": "direct", "mode": "firefox_140", "query": 0, "status": [], "results": 0, "error": "KeyError", "seconds": 0.0}
+{"engine": "yandex", "route": "direct", "mode": "httpx-h1", "query": 0, "status": [], "results": 0, "error": "KeyError", "seconds": 0.0}
+{"engine": "yahoo", "route": "direct", "mode": "random", "query": 1, "status": [200], "results": 0, "error": null, "seconds": 0.78}
+{"engine": "duckduckgo", "route": "direct", "mode": "random", "query": 0, "status": [202], "results": 0, "error": null, "seconds": 0.18}
+{"engine": "duckduckgo", "route": "direct", "mode": "random", "query": 1, "status": [202], "results": 0, "error": null, "seconds": 0.17}
+{"engine": "duckduckgo", "route": "direct", "mode": "random", "query": 2, "status": [202], "results": 0, "error": null, "seconds": 0.17}
+{"engine": "duckduckgo", "route": "direct", "mode": "chrome_146", "query": 0, "status": [202], "results": 0, "error": null, "seconds": 0.17}
+{"engine": "duckduckgo", "route": "direct", "mode": "firefox_140", "query": 0, "status": [202], "results": 0, "error": null, "seconds": 0.18}
+{"engine": "yahoo", "route": "direct", "mode": "random", "query": 2, "status": [200], "results": 7, "error": null, "seconds": 0.76}
+{"engine": "duckduckgo", "route": "direct", "mode": "httpx-h1", "query": 0, "status": [200], "results": 10, "error": null, "seconds": 0.75}
+{"engine": "yahoo", "route": "direct", "mode": "chrome_146", "query": 0, "status": [200], "results": 7, "error": null, "seconds": 0.76}
+{"engine": "startpage", "route": "direct", "mode": "random", "query": 0, "status": [200, 200], "results": 0, "error": null, "seconds": 0.33}
+{"engine": "startpage", "route": "direct", "mode": "random", "query": 1, "status": [200, 200], "results": 0, "error": null, "seconds": 0.38}
+{"engine": "yahoo", "route": "direct", "mode": "firefox_140", "query": 0, "status": [200], "results": 7, "error": null, "seconds": 0.68}
+{"engine": "yahoo", "route": "direct", "mode": "httpx-h1", "query": 0, "status": [500], "results": 0, "error": null, "seconds": 0.14}
+{"engine": "startpage", "route": "direct", "mode": "random", "query": 2, "status": [200, 200], "results": 0, "error": null, "seconds": 0.27}
+{"engine": "startpage", "route": "direct", "mode": "chrome_146", "query": 0, "status": [200, 200], "results": 0, "error": null, "seconds": 0.36}
+{"engine": "startpage", "route": "direct", "mode": "firefox_140", "query": 0, "status": [200, 200], "results": 0, "error": null, "seconds": 0.37}
+{"engine": "startpage", "route": "direct", "mode": "httpx-h1", "query": 0, "status": [200, 200], "results": 0, "error": null, "seconds": 0.66}
+{"engine": "brave", "route": "proton", "mode": "random", "query": 0, "status": [200], "results": 19, "error": null, "seconds": 2.18}
+{"engine": "yahoo", "route": "proton", "mode": "random", "query": 0, "status": [200], "results": 0, "error": null, "seconds": 1.4}
+{"engine": "brave", "route": "proton", "mode": "random", "query": 1, "status": [200], "results": 20, "error": null, "seconds": 1.55}
+{"engine": "yahoo", "route": "proton", "mode": "random", "query": 1, "status": [200], "results": 0, "error": null, "seconds": 1.3}
+{"engine": "brave", "route": "proton", "mode": "random", "query": 2, "status": [200], "results": 19, "error": null, "seconds": 1.48}
+{"engine": "yahoo", "route": "proton", "mode": "random", "query": 2, "status": [200], "results": 8, "error": null, "seconds": 1.76}
+{"engine": "brave", "route": "proton", "mode": "chrome_146", "query": 0, "status": [200], "results": 19, "error": null, "seconds": 1.24}
+{"engine": "brave", "route": "proton", "mode": "firefox_140", "query": 0, "status": [200], "results": 19, "error": null, "seconds": 1.22}
+{"engine": "yahoo", "route": "proton", "mode": "chrome_146", "query": 0, "status": [200], "results": 0, "error": null, "seconds": 1.73}
+{"engine": "brave", "route": "proton", "mode": "httpx-h1", "query": 0, "status": [429], "results": 0, "error": null, "seconds": 0.94}
+{"engine": "yandex", "route": "proton", "mode": "random", "query": 0, "status": [], "results": 0, "error": "KeyError", "seconds": 0.0}
+{"engine": "yandex", "route": "proton", "mode": "random", "query": 1, "status": [], "results": 0, "error": "KeyError", "seconds": 0.0}
+{"engine": "yandex", "route": "proton", "mode": "random", "query": 2, "status": [], "results": 0, "error": "KeyError", "seconds": 0.0}
+{"engine": "yandex", "route": "proton", "mode": "chrome_146", "query": 0, "status": [], "results": 0, "error": "KeyError", "seconds": 0.0}
+{"engine": "yandex", "route": "proton", "mode": "firefox_140", "query": 0, "status": [], "results": 0, "error": "KeyError", "seconds": 0.0}
+{"engine": "yandex", "route": "proton", "mode": "httpx-h1", "query": 0, "status": [], "results": 0, "error": "KeyError", "seconds": 0.0}
+{"engine": "yahoo", "route": "proton", "mode": "firefox_140", "query": 0, "status": [200], "results": 0, "error": null, "seconds": 1.59}
+{"engine": "yahoo", "route": "proton", "mode": "httpx-h1", "query": 0, "status": [500], "results": 0, "error": null, "seconds": 0.67}
+{"engine": "duckduckgo", "route": "proton", "mode": "random", "query": 0, "status": [403], "results": 0, "error": null, "seconds": 1.49}
+{"engine": "startpage", "route": "proton", "mode": "random", "query": 0, "status": [200, 200], "results": 0, "error": null, "seconds": 1.24}
+{"engine": "duckduckgo", "route": "proton", "mode": "random", "query": 1, "status": [403], "results": 0, "error": null, "seconds": 1.23}
+{"engine": "startpage", "route": "proton", "mode": "random", "query": 1, "status": [200, 200], "results": 0, "error": null, "seconds": 1.17}
+{"engine": "duckduckgo", "route": "proton", "mode": "random", "query": 2, "status": [403], "results": 0, "error": null, "seconds": 1.2}
+{"engine": "startpage", "route": "proton", "mode": "random", "query": 2, "status": [200, 200], "results": 0, "error": null, "seconds": 1.16}
+{"engine": "duckduckgo", "route": "proton", "mode": "chrome_146", "query": 0, "status": [403], "results": 0, "error": null, "seconds": 1.2}
+{"engine": "startpage", "route": "proton", "mode": "chrome_146", "query": 0, "status": [200, 200], "results": 0, "error": null, "seconds": 1.09}
+{"engine": "duckduckgo", "route": "proton", "mode": "firefox_140", "query": 0, "status": [403], "results": 0, "error": null, "seconds": 1.19}
+{"engine": "startpage", "route": "proton", "mode": "firefox_140", "query": 0, "status": [200, 200], "results": 0, "error": null, "seconds": 1.11}
+{"engine": "duckduckgo", "route": "proton", "mode": "httpx-h1", "query": 0, "status": [200], "results": 10, "error": null, "seconds": 1.27}
+{"engine": "startpage", "route": "proton", "mode": "httpx-h1", "query": 0, "status": [200, 200], "results": 0, "error": null, "seconds": 1.82}
