@@ -8,11 +8,10 @@ The Rust service treats this bridge like any other provider:
 
 Usage:
     pip install -r requirements.txt
-    uvicorn main:app --host 0.0.0.0 --port 8001
+    uvicorn main:app --host 0.0.0.0 --port 8001 --no-access-log
 
 Optional env vars:
     PORT           Listen port (default: 8001)
-    MAX_RESULTS    Default max results (default: 10)
     SAFESEARCH     on/moderate/off (default: on). Several ddgs engines ignore it
                    (yahoo, mojeek, yandex, startpage), hence the adult filter below.
     BACKEND_ORDER  Comma-separated backend priority when no backend is requested
@@ -21,7 +20,7 @@ Optional env vars:
     DDG_MAX_ATTEMPTS  Maximum route attempts per search (default: 6).
     DDG_SEARCH_BUDGET_SECONDS  Soft request budget (default: 20).
     BACKEND_PROXIES  Per-backend egress, "backend=proxy|fallback,..." ("*" = every
-                   other backend). Empty = direct. Proxies are tried in order; the next
+                   other backend). Empty = DDG_PROXIES or direct. First proxy rotates per request; the next
                    one is used when a proxy errors or returns nothing. Example:
                    yahoo=http://vpn-gw:8888|http://vpn-gw-proton:8888,*=http://vpn-gw-proton:8888
                    Some engines serve junk (yahoo: porn) or nothing to datacenter IPs.
@@ -36,14 +35,14 @@ from typing import Optional
 from ddgs.engines import ENGINES as DDGS_ENGINES
 from ddgs import DDGS
 from resilience import ENGINES, Scheduler, error_code, proxy_pool
+from fastapi import FastAPI, HTTPException, Query
 
 # DDGS logs raw exception strings (including request URLs) at INFO.
 logging.getLogger("ddgs").setLevel(logging.CRITICAL)
-from fastapi import FastAPI, HTTPException, Query
 
 _DEFAULT_BACKEND_ORDER = "yandex,startpage,yahoo,duckduckgo,brave"
 
-app = FastAPI(title="DDG Bridge", version="0.3.0")
+app = FastAPI(title="DDG Bridge", version="0.4.0")
 
 # --- Adult-content filter ---------------------------------------------------
 # Incident 2026-09-26: the yahoo backend answered questions about French social
@@ -134,15 +133,7 @@ def _run_backend(q, backend, kwargs, offset, deadline, remaining):
             # An engine block/empty response is not proof of a broken proxy.
             # It still counts as a failed proxy attempt, but only transport
             # failures open the shared proxy circuit.
-            if proxy is not None and error not in (None, 'tls_h2', 'timeout', 'connection'):
-                with _SCHEDULER.lock:
-                    p = _SCHEDULER.proxies[proxy]
-                    p.probing = False
-                    p.failures = 0
-                    p.retry_at = 0
-                    p.last_error = error
-            else:
-                _SCHEDULER.finish_proxy(proxy, error)
+            _SCHEDULER.finish_proxy(proxy, error)
             if results:
                 last_error = None
                 return results, attempts
@@ -202,11 +193,12 @@ def search(
     """
     Execute a DDG web search and return normalised results.
 
-    When `backend` is omitted, tries all backends sequentially in BACKEND_ORDER
-    until one returns results, and reports which one succeeded in `backend_used`.
+    Tries requested backends first, then BACKEND_ORDER until one returns results.
+    Disabled library engines are skipped, never passed to DDGS's implicit auto
+    fallback. Reports the engine that actually succeeded in `backend_used`.
 
     Returns:
-        { "results": [...], "backend_used": "yandex" }
+        { "results": [...], "backend_used": "brave" }
     """
     if not q.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")

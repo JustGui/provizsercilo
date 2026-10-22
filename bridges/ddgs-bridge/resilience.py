@@ -110,7 +110,16 @@ class Scheduler:
     def finish_proxy(self, proxy, error):
         if proxy is not None:
             with self.lock:
-                self.proxies[proxy].finish(error, self.clock(), self.base, self.cap, self.jitter)
+                breaker = self.proxies[proxy]
+                if error not in (None, 'tls_h2', 'timeout', 'connection'):
+                    # Engine rejection proves transport reachability, but does
+                    # not count as a successful search in route statistics.
+                    breaker.probing = False
+                    breaker.failures = 0
+                    breaker.retry_at = 0
+                    breaker.last_error = error
+                else:
+                    breaker.finish(error, self.clock(), self.base, self.cap, self.jitter)
 
     def finish_engine(self, engine, error, attempted=True):
         with self.lock:

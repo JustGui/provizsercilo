@@ -101,7 +101,8 @@ def test_breaker_exponential_cap_half_open_and_reset():
     b = Breaker()
     for now, expected in [(0, 5), (5, 15), (15, 35), (35, 55)]:
         assert b.acquire(now)
-        assert not b.acquire(now) if b.probing else True
+        if b.probing:
+            assert not b.acquire(now)
         b.finish('timeout', now, 5, 20, lambda: 0)
         assert b.retry_at == expected
         assert not b.acquire(expected - .01)
@@ -150,3 +151,27 @@ def test_disabled_engine_cannot_silently_fan_out(client, monkeypatch):
         assert client.get('/search', params={'q': 'query', 'backend': 'yandex'}).status_code == 503
         ddgs.assert_not_called()
     assert not client.get('/health/engines').json()['engines']['yandex']['enabled']
+
+
+def test_transport_recovery_half_open(client, monkeypatch):
+    now = [0]
+    s = Scheduler(['http://a:8888'], clock=lambda: now[0], jitter=lambda: 0)
+    monkeypatch.setattr(main, '_SCHEDULER', s)
+    with patch.object(main, 'DDGS') as ddgs:
+        ddgs.return_value.text.side_effect = [RuntimeError('TLS failure'), result()]
+        assert client.get('/search', params={'q': 'query'}).status_code == 503
+        assert client.get('/search', params={'q': 'query'}).status_code == 503
+        assert ddgs.call_count == 1
+        now[0] = 5
+        assert client.get('/search', params={'q': 'query'}).status_code == 200
+    assert s.health()['engines']['brave']['state'] == 'closed'
+    assert s.health()['proxies']['proxy-1']['state'] == 'closed'
+
+
+def test_healthy_routes_rotate_per_request(client, monkeypatch):
+    monkeypatch.setattr(main, '_SCHEDULER', Scheduler(['http://a:8888','http://b:8888']))
+    with patch.object(main, 'DDGS') as ddgs:
+        ddgs.return_value.text.return_value = result()
+        for _ in range(2):
+            assert client.get('/search', params={'q': 'query'}).status_code == 200
+        assert [call.kwargs['proxy'] for call in ddgs.call_args_list] == ['http://a:8888','http://b:8888']

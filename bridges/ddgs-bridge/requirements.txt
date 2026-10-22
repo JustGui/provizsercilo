@@ -1,3 +1,4 @@
-ddgs>=9.0.0
+ddgs==9.16.0
+primp==2.0.1
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
