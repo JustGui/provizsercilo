@@ -17,6 +17,9 @@ Optional env vars:
                    (yahoo, mojeek, yandex, startpage), hence the adult filter below.
     BACKEND_ORDER  Comma-separated backend priority when no backend is requested
                    (default: yandex,startpage,yahoo,duckduckgo,brave)
+    DDG_PROXIES    Optional comma-separated rotating HTTP/SOCKS egress pool.
+    DDG_MAX_ATTEMPTS  Maximum route attempts per search (default: 6).
+    DDG_SEARCH_BUDGET_SECONDS  Soft request budget (default: 20).
     BACKEND_PROXIES  Per-backend egress, "backend=proxy|fallback,..." ("*" = every
                    other backend). Empty = direct. Proxies are tried in order; the next
                    one is used when a proxy errors or returns nothing. Example:
@@ -25,10 +28,17 @@ Optional env vars:
 """
 
 import os
+import logging
+import time
 import re
 from typing import Optional
 
+from ddgs.engines import ENGINES as DDGS_ENGINES
 from ddgs import DDGS
+from resilience import ENGINES, Scheduler, error_code, proxy_pool
+
+# DDGS logs raw exception strings (including request URLs) at INFO.
+logging.getLogger("ddgs").setLevel(logging.CRITICAL)
 from fastapi import FastAPI, HTTPException, Query
 
 _DEFAULT_BACKEND_ORDER = "yandex,startpage,yahoo,duckduckgo,brave"
@@ -93,24 +103,53 @@ def _parse_proxies(spec: str) -> dict:
 
 
 _BACKEND_PROXIES = _parse_proxies(os.getenv("BACKEND_PROXIES", ""))
+for _routes in _BACKEND_PROXIES.values():
+    proxy_pool(",".join(_routes))  # fail fast without echoing credentials
+_SCHEDULER = Scheduler(proxy_pool(os.getenv("DDG_PROXIES", "")), _BACKEND_PROXIES)
+_MAX_ATTEMPTS = max(1, int(os.getenv("DDG_MAX_ATTEMPTS", "6")))
+_BUDGET = max(1, float(os.getenv("DDG_SEARCH_BUDGET_SECONDS", "20")))
 
 
-def _run_backend(q: str, backend: str, kwargs: dict) -> list:
-    """Search one backend through its configured egress chain (direct when none).
-    Returns cleaned results; raises the last error when every route failed."""
-    routes = _BACKEND_PROXIES.get(backend.lower()) or _BACKEND_PROXIES.get("*") or [None]
-    last_exc: Optional[Exception] = None
-    for proxy in routes:
-        try:
-            results = _clean(DDGS(timeout=8, proxy=proxy).text(q, **{**kwargs, "backend": backend}) or [])
-        except Exception as exc:
-            last_exc = exc
-            continue
-        if results:
-            return results
-    if last_exc is not None:
-        raise last_exc
-    return []
+def _run_backend(q, backend, kwargs, offset, deadline, remaining):
+    """Try each healthy route once. No direct escape from a configured pool."""
+    if backend not in DDGS_ENGINES["text"]:
+        return [], 0
+    if not _SCHEDULER.acquire_engine(backend):
+        return [], 0
+    attempts, last_error = 0, 'empty'
+    try:
+        for proxy in _SCHEDULER.routes(backend, offset):
+            if attempts >= remaining or time.monotonic() >= deadline:
+                break
+            if not _SCHEDULER.acquire_proxy(proxy):
+                continue
+            attempts += 1
+            try:
+                timeout = max(.1, min(8, deadline - time.monotonic()))
+                results = _clean(DDGS(timeout=timeout, proxy=proxy).text(
+                    q, **{**kwargs, "backend": backend}) or [])
+                error = None if results else 'empty'
+            except Exception as exc:
+                error, results = error_code(exc), []
+            # An engine block/empty response is not proof of a broken proxy.
+            # It still counts as a failed proxy attempt, but only transport
+            # failures open the shared proxy circuit.
+            if proxy is not None and error not in (None, 'tls_h2', 'timeout', 'connection'):
+                with _SCHEDULER.lock:
+                    p = _SCHEDULER.proxies[proxy]
+                    p.probing = False
+                    p.failures = 0
+                    p.retry_at = 0
+                    p.last_error = error
+            else:
+                _SCHEDULER.finish_proxy(proxy, error)
+            if results:
+                last_error = None
+                return results, attempts
+            last_error = error
+        return [], attempts
+    finally:
+        _SCHEDULER.finish_engine(backend, last_error, attempted=bool(attempts))
 
 
 def _clean(raw: list) -> list:
@@ -139,6 +178,14 @@ def _ddg_region(language: Optional[str], country: Optional[str]) -> str:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/health/engines")
+def engine_health():
+    health = _SCHEDULER.health()
+    for engine, stats in health["engines"].items():
+        stats["enabled"] = engine in DDGS_ENGINES["text"]
+    return health
 
 
 @app.get("/search")
@@ -172,31 +219,25 @@ def search(
     if timelimit in ("d", "w", "m", "y"):
         kwargs["timelimit"] = timelimit
 
-    if backend:
-        # Caller specified a backend — single attempt, no retry.
-        try:
-            results = _run_backend(q, backend, kwargs)
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail=str(exc))
-        backend_used = backend
+    order = [b.strip().lower() for b in os.getenv("BACKEND_ORDER", _DEFAULT_BACKEND_ORDER).split(",") if b.strip()]
+    requested = [b.strip().lower() for b in backend.split(",") if b.strip()] if backend else []
+    backends = list(dict.fromkeys(requested + order))
+    if not backends or any(b not in ENGINES for b in backends):
+        raise HTTPException(status_code=400, detail="Unsupported search backend")
+    deadline = time.monotonic() + _BUDGET
+    offset, attempts = _SCHEDULER.offset(), 0
+    for b in backends:
+        results, used = _run_backend(q, b, kwargs, offset, deadline, _MAX_ATTEMPTS - attempts)
+        attempts += used
+        if results:
+            backend_used = b
+            break
+        if attempts >= _MAX_ATTEMPTS or time.monotonic() >= deadline:
+            break
     else:
-        # Fan-out: try backends sequentially in priority order.
-        order = os.getenv("BACKEND_ORDER", _DEFAULT_BACKEND_ORDER)
-        backends = [b.strip() for b in order.split(",") if b.strip()]
         results = []
-        backend_used = None
-        last_err = "No results found."
-        for b in backends:
-            try:
-                results = _run_backend(q, b, kwargs)
-                if results:
-                    backend_used = b
-                    break
-            except Exception as exc:
-                last_err = str(exc)
-                results = []
-        if not results:
-            raise HTTPException(status_code=503, detail=last_err)
+    if not results:
+        raise HTTPException(status_code=503, detail="Search routes unavailable")
 
     return {"results": results, "backend_used": backend_used}
 
@@ -205,4 +246,4 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("PORT", "8001"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port, access_log=False)
