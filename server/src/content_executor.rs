@@ -183,6 +183,7 @@ impl ContentExecutor {
                         success: false,
                         error: Some("auth".to_string()),
                         duration_ms: 0,
+                        ..Default::default()
                     });
                     continue;
                 }
@@ -289,6 +290,7 @@ impl ContentExecutor {
                     success: got_any,
                     error: Some(et.to_string()),
                     duration_ms: dur,
+                    ..Default::default()
                 });
             } else {
                 chain_parts.push(format!("{slug}:ok"));
@@ -298,6 +300,7 @@ impl ContentExecutor {
                     success: got_any,
                     error: (!got_any).then(|| "empty".to_string()),
                     duration_ms: dur,
+                    ..Default::default()
                 });
             }
 

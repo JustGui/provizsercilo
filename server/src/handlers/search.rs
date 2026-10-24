@@ -127,12 +127,24 @@ pub struct SearchMeta {
     pub cache_hit: bool,
     pub duration_ms: u64,
     pub n_returned: usize,
+    /// Winning call's native cost estimate, from the same snapshot as SearchLog.
+    /// Per-provider charges (including earlier empty answers) are in `attempts`.
+    pub cost: Option<f64>,
+    pub currency: Option<String>,
 }
 
 pub async fn handle_search(
     State(state): State<AppState>,
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<SearchResponse>, AppError> {
+    // Validate before cache lookup as well as in the executor.
+    if req.query.trim().is_empty() {
+        return Err(AppError::request_error(
+            "query must not be blank".into(),
+            String::new(),
+            &Vec::<AttemptRecord>::new(),
+        ));
+    }
     let n = req.n.clamp(1, 50);
     let cache_ttl = req.cache_ttl_secs.unwrap_or(state.config.cache_ttl_secs);
     // Enrichment (extra_snippets/full_content) fetches + reranks pages - budget
@@ -181,6 +193,8 @@ pub async fn handle_search(
                     cache_hit: true,
                     duration_ms: 0,
                     n_returned,
+                    cost: Some(0.0),
+                    currency: None,
                 },
                 debug: None,
                 attempts: vec![],
@@ -286,6 +300,8 @@ pub async fn handle_search(
             cache_hit: false,
             duration_ms: result.duration_ms,
             n_returned,
+            cost: result.log.cost,
+            currency: result.log.currency,
         },
         debug: result.debug_decisions,
         attempts: result.attempts,

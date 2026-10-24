@@ -50,6 +50,9 @@ pub enum ProviderError {
     Timeout,
     #[error("No results returned")]
     Empty,
+    /// Local provider limitation; the reason must be a static, query-free code.
+    #[error("Unsupported query: {0}")]
+    UnsupportedQuery(&'static str),
     #[error("HTTP error {status}: {message}")]
     Http { status: u16, message: String },
     #[error("Parse error: {0}")]
@@ -67,6 +70,7 @@ impl ProviderError {
             Self::Blocked => E::Auth,
             Self::Timeout => E::Timeout,
             Self::Empty => E::Empty,
+            Self::UnsupportedQuery(_) => E::Request,
             Self::Request(e) if e.is_timeout() => E::Timeout,
             Self::Http { status, message } => {
                 let body = message.to_ascii_lowercase();
@@ -151,6 +155,18 @@ impl ProviderError {
         self.error_type().as_str()
     }
 
+    /// Provider-specific refusals are safe to expose in the fallback trace.
+    /// Never include an upstream body: it may echo the user's query.
+    pub fn query_refusal_reason(&self) -> Option<&'static str> {
+        match self {
+            Self::UnsupportedQuery(reason) => Some(reason),
+            _ if self.error_type() == proviz_core::rate_limit::ErrorType::Request => {
+                Some("invalid_query")
+            }
+            _ => None,
+        }
+    }
+
     pub fn is_ip_related(&self) -> bool {
         matches!(
             self.error_type(),
@@ -168,6 +184,7 @@ impl ProviderError {
 /// `supports_include_domains` (hosts only); for every other provider the executor has
 /// already rewritten them into `site:` operators in `query` and filters the answer
 /// (see `operators`). `freshness` is mapped by each adapter that has a date parameter.
+#[derive(Clone, Copy)]
 pub struct SearchQuery<'a> {
     pub query: &'a str,
     pub n: usize,
@@ -188,6 +205,11 @@ pub struct SearchQuery<'a> {
 #[async_trait]
 pub trait SearchProvider: Send + Sync {
     fn slug(&self) -> &str;
+
+    /// Check local limitations before reserving usage or making an upstream call.
+    fn validate_search(&self, _q: &SearchQuery<'_>) -> Result<(), ProviderError> {
+        Ok(())
+    }
 
     /// True for providers whose key_ref holds an actual API key.
     /// False for providers where key_ref holds a service URL (SearXNG, DDG bridge).

@@ -1,4 +1,9 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use providers::{operators, ProviderError, SearchProvider, SearchQuery};
 use proviz_core::{
@@ -50,12 +55,18 @@ impl SearchParams {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct AttemptRecord {
     pub provider: String,
     pub success: bool,
     pub error: Option<String>,
     pub duration_ms: u64,
+    /// Estimated native charge for an accepted upstream call, including empty answers.
+    /// None for skips, rejected/failed requests, or keys without configured pricing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
 }
 
 /// Result of a full search execution including fallback chain.
@@ -226,6 +237,13 @@ impl Executor {
         &self,
         params: &SearchParams,
     ) -> Result<ExecutionResult, crate::error::AppError> {
+        if params.query.trim().is_empty() {
+            return Err(crate::error::AppError::request_error(
+                "query must not be blank".into(),
+                String::new(),
+                &Vec::<AttemptRecord>::new(),
+            ));
+        }
         let start = Instant::now();
         let deadline = start + Duration::from_millis(params.timeout_ms);
         let catalog = self.catalog.read().await;
@@ -275,7 +293,7 @@ impl Executor {
             vec![pool]
         };
 
-        let req = SelectRequest {
+        let mut req = SelectRequest {
             allow_pacing: true,
             language: params.language.clone(),
             country: params.country.clone(),
@@ -293,6 +311,7 @@ impl Executor {
         // tier full of rate-limited free candidates could burn it before the
         // paid fallback tier is ever reached.
         let mut real_attempts: usize = 0;
+        let mut refused_providers = HashSet::new();
 
         loop {
             if real_attempts > params.max_fallbacks || Instant::now() >= deadline {
@@ -314,6 +333,9 @@ impl Executor {
             // attempts/chain, then advance to the next tier (if any).
             let Some(candidate) = outcome.candidate else {
                 for d in &outcome.decisions {
+                    if refused_providers.contains(&d.provider) {
+                        continue; // Its precise refusal is already in the trace.
+                    }
                     let reason = d.reason.clone().unwrap_or_else(|| d.outcome.clone());
                     chain_parts.push(format!("{}:skipped:{reason}", d.provider));
                     attempt_records.push(AttemptRecord {
@@ -321,6 +343,7 @@ impl Executor {
                         success: false,
                         error: Some(format!("skipped:{reason}")),
                         duration_ms: 0,
+                        ..Default::default()
                     });
                 }
                 tier_idx += 1;
@@ -346,6 +369,7 @@ impl Executor {
                         success: false,
                         error: Some("skipped:budget_exhausted".into()),
                         duration_ms: 0,
+                        ..Default::default()
                     });
                     if params.debug {
                         all_decisions.push(DebugDecision {
@@ -409,11 +433,15 @@ impl Executor {
                         "ok"
                     };
                     chain_parts.push(format!("{provider_slug}:{outcome}"));
+                    let cost = candidate.api_key.cost_per_mille.map(|cpm| cpm / 1000.0);
+                    let currency = cost.and_then(|_| candidate.api_key.currency.clone());
                     attempt_records.push(AttemptRecord {
                         provider: provider_slug.clone(),
                         success: true,
                         error: None,
                         duration_ms: attempt_start.elapsed().as_millis() as u64,
+                        cost,
+                        currency: currency.clone(),
                     });
 
                     let storage = Arc::clone(self.catalog.storage());
@@ -427,9 +455,6 @@ impl Executor {
 
                     // Snapshot the cost at the CPM in effect right now - a later CPM
                     // edit must not retroactively change historical totals.
-                    let cost = candidate.api_key.cost_per_mille.map(|cpm| cpm / 1000.0);
-                    let currency = cost.and_then(|_| candidate.api_key.currency.clone());
-
                     let log = SearchLog {
                         id: Uuid::new_v4().to_string(),
                         query_hash: params.query_hash.clone(),
@@ -462,6 +487,24 @@ impl Executor {
                     });
                 }
                 Err(e) => {
+                    if let Some(reason) = e.query_refusal_reason() {
+                        // A valid Sercilo request can exceed one provider's limits.
+                        // Skip all its keys, without spending the fallback budget or
+                        // penalizing the key; another provider may accept the query.
+                        real_attempts -= 1;
+                        refused_providers.insert(candidate.provider.slug.clone());
+                        chain_parts.push(format!("{}:skipped:{reason}", candidate.provider.slug));
+                        attempt_records.push(AttemptRecord {
+                            provider: candidate.provider.slug.clone(),
+                            success: false,
+                            error: Some(format!("skipped:{reason}")),
+                            duration_ms: attempt_start.elapsed().as_millis() as u64,
+                            ..Default::default()
+                        });
+                        req.exclude_provider_slugs
+                            .push(candidate.provider.slug.clone());
+                        continue;
+                    }
                     e.log_auth_billing_status();
                     let error_type = e.error_type_str();
                     info!(
@@ -487,22 +530,34 @@ impl Executor {
                     });
 
                     self.stats.record_search(&candidate.provider.slug, true, 0);
+                    // Empty answers still represent accepted upstream searches.
+                    let cost = (et == ErrorType::Empty)
+                        .then_some(candidate.api_key.cost_per_mille)
+                        .flatten()
+                        .map(|cpm| cpm / 1000.0);
                     attempt_records.push(AttemptRecord {
                         provider: candidate.provider.slug.clone(),
                         success: false,
                         error: Some(error_type.to_string()),
                         duration_ms: attempt_start.elapsed().as_millis() as u64,
+                        cost,
+                        currency: cost.and_then(|_| candidate.api_key.currency.clone()),
                     });
-                    if et == ErrorType::Request {
-                        return Err(crate::error::AppError::request_error(
-                            e.to_string(),
-                            chain_parts.join(","),
-                            &attempt_records,
-                        ));
-                    }
                     excluded.push(candidate.api_key.id.clone());
                 }
             }
+        }
+
+        if tiers
+            .iter()
+            .flatten()
+            .all(|c| refused_providers.contains(&c.provider.slug))
+        {
+            return Err(crate::error::AppError::request_error(
+                "No provider accepted the query".into(),
+                chain_parts.join(","),
+                &attempt_records,
+            ));
         }
 
         warn!(
@@ -585,6 +640,21 @@ impl Executor {
             (Vec::new(), Vec::new())
         };
         let freshness = (!params.freshness.is_empty()).then_some(&params.freshness);
+        let query = SearchQuery {
+            query: &query_text,
+            n: params.n,
+            language: params.language.as_deref(),
+            country: params.country.as_deref(),
+            api_key: &api_key,
+            extra_snippets: params.extra_snippets,
+            full_content: params.full_content.as_deref(),
+            max_snippets: params.max_snippets,
+            min_score: params.min_score,
+            include_domains: &include_hosts,
+            exclude_domains: &exclude_hosts,
+            freshness,
+        };
+        provider.validate_search(&query)?;
 
         // A transient blip (timeout, network error, 5xx) gets one short-backoff
         // retry against the *same* candidate before it's marked down and
@@ -637,20 +707,6 @@ impl Executor {
             }
             let in_flight = InFlight(&self.usage, &candidate.api_key.id);
 
-            let query = SearchQuery {
-                query: &query_text,
-                n: params.n,
-                language: params.language.as_deref(),
-                country: params.country.as_deref(),
-                api_key: &api_key,
-                extra_snippets: params.extra_snippets,
-                full_content: params.full_content.as_deref(),
-                max_snippets: params.max_snippets,
-                min_score: params.min_score,
-                include_domains: &include_hosts,
-                exclude_domains: &exclude_hosts,
-                freshness,
-            };
             let result = tokio::time::timeout(
                 deadline.saturating_duration_since(Instant::now()),
                 provider.search(query),
@@ -861,6 +917,298 @@ mod tests {
             PathBuf::from("/nonexistent"),
             Arc::new(StatsTracker::new()),
         )
+    }
+
+    async fn deepseek_executor() -> Executor {
+        let mut ex = executor(0).await;
+        ex.catalog = catalog_with(&[
+            ("deepseek", "FALLBACK_TEST_DEEPSEEK", 1),
+            ("staan", "FALLBACK_TEST_STAAN", 2),
+        ])
+        .await;
+        ex.providers.insert(
+            "deepseek".into(),
+            Arc::new(providers::deepseek::DeepSeekProvider::default()),
+        );
+        let storage = ex.catalog.storage();
+        let group = storage
+            .create_group(proviz_core::models::Group {
+                id: Uuid::new_v4().to_string(),
+                slug: "paid-mapping".into(),
+                name: "Paid mapping".into(),
+                description: None,
+                is_active: true,
+                created_at: String::new(),
+            })
+            .await
+            .unwrap();
+        for key in storage.list_api_keys().await.unwrap() {
+            storage
+                .add_group_member(
+                    &group.id,
+                    &key.id,
+                    if key.label == "deepseek" { 1 } else { 2 },
+                )
+                .await
+                .unwrap();
+        }
+        ex.catalog.reload().await.unwrap();
+        ex
+    }
+
+    async fn search_router(ex: Executor) -> axum::Router {
+        let mut config = crate::config::Config::from_env();
+        config.database_url = None;
+        config.database_path = ":memory:".into();
+        let (_, mut state) = crate::app::build_app(config).await.unwrap();
+        state.catalog = ex.catalog.clone();
+        state.storage = ex.catalog.storage().clone();
+        state.no_cache_providers = Default::default();
+        state.executor = Arc::new(ex);
+        axum::Router::new()
+            .route(
+                "/search",
+                axum::routing::post(crate::handlers::search::handle_search),
+            )
+            .with_state(state)
+    }
+
+    async fn post_search(
+        router: axum::Router,
+        request: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
+        use axum::{
+            body::{to_bytes, Body},
+            http::Request,
+        };
+        use tower::ServiceExt;
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/search")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn long_deepseek_query_falls_back_to_staan_with_skip_trace() {
+        // Each query fits on its own; provider-added operators cross the limit.
+        for extra in [
+            serde_json::json!({"language":"fr"}),
+            serde_json::json!({"date_from":"2026-01-01", "date_to":"2026-10-01"}),
+            serde_json::json!({"include_domains":["staan.test"]}),
+        ] {
+            let ex = deepseek_executor().await;
+            let usage = ex.usage.clone();
+            let key = ex
+                .catalog
+                .read()
+                .await
+                .api_keys
+                .iter()
+                .find(|k| k.label == "deepseek")
+                .unwrap()
+                .id
+                .clone();
+            let mut request = serde_json::json!({
+                "query":"é".repeat(125), "group":"paid-mapping", "max_fallbacks":0,
+                "cache_ttl_secs":0
+            });
+            request
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let (status, body) = post_search(search_router(ex).await, request).await;
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(body["meta"]["provider"], "staan");
+            assert!(body["meta"]["fallback_chain"]
+                .as_str()
+                .unwrap()
+                .contains("deepseek:skipped:query_too_long"));
+            assert!(body["attempts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["provider"] == "deepseek" && a["error"] == "skipped:query_too_long"));
+            assert_eq!(
+                usage.rpd_headroom(&key, Some(1)),
+                1.0,
+                "local refusal must not consume the key's daily budget"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn all_providers_refusing_returns_sanitized_error_after_fallback() {
+        let mut ex = deepseek_executor().await;
+        let mock = Arc::new(ControlledProvider::new(400));
+        ex.providers.insert("staan".into(), mock.clone());
+        let (status, body) = post_search(
+            search_router(ex).await,
+            serde_json::json!({
+                "query":"x".repeat(129), "group":"paid-mapping", "max_fallbacks":0
+            }),
+        )
+        .await;
+        assert_eq!(status, 422, "{body}");
+        assert_eq!(body["code"], "request_error");
+        let chain = body["fallback_chain"].as_str().unwrap();
+        assert!(chain.contains("deepseek:skipped:query_too_long"));
+        assert!(chain.contains("staan:skipped:invalid_query"));
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(body["error"], "No provider accepted the query");
+    }
+
+    #[tokio::test]
+    async fn malformed_or_blank_client_requests_remain_client_errors() {
+        let router = search_router(executor(0).await).await;
+        for request in [
+            serde_json::json!({"query":"  "}),
+            serde_json::json!({"n":5}),
+        ] {
+            use axum::{body::Body, http::Request};
+            use tower::ServiceExt;
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/search")
+                        .header("content-type", "application/json")
+                        .body(Body::from(request.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 422);
+        }
+    }
+
+    async fn set_price(ex: &Executor, slug: &str, cpm: f64, currency: &str) {
+        let key = ex
+            .catalog
+            .read()
+            .await
+            .api_keys
+            .iter()
+            .find(|k| k.label == slug)
+            .unwrap()
+            .id
+            .clone();
+        ex.catalog
+            .storage()
+            .update_api_key_fields(
+                &key,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(Some(cpm)),
+                Some(Some(currency.into())),
+                None,
+            )
+            .await
+            .unwrap();
+        ex.catalog.reload().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn configured_native_cost_reaches_search_response_and_cache_hits_are_free() {
+        // All adapters share the same key-priced accounting path.
+        for (slug, cpm, currency) in [
+            ("deepseek", 0.75, "USD"),
+            ("staan", 2.0, "EUR"),
+            ("exa", 7.0, "USD"),
+        ] {
+            let mut ex = executor(0).await;
+            ex.catalog = catalog_with(&[(slug, "COST_TEST_KEY", 1)]).await;
+            ex.providers.insert(
+                slug.into(),
+                Arc::new(FlakyProvider {
+                    slug,
+                    fail_first: 0,
+                    calls: AtomicUsize::new(0),
+                }),
+            );
+            set_price(&ex, slug, cpm, currency).await;
+            let result = ex.search(params()).await.unwrap();
+            assert_eq!(result.log.cost, Some(cpm / 1000.0));
+            assert_eq!(result.log.currency.as_deref(), Some(currency));
+            let router = search_router(ex).await;
+            let request = serde_json::json!({"query":"public pricing test", "cache_ttl_secs":3600});
+            let (status, body) = post_search(router.clone(), request.clone()).await;
+            assert_eq!(status, 200);
+            assert_eq!(body["meta"]["provider"], slug);
+            assert_eq!(body["meta"]["cost"], cpm / 1000.0);
+            assert_eq!(body["meta"]["currency"], currency);
+            assert_eq!(body["attempts"][0]["cost"], cpm / 1000.0);
+            assert_eq!(body["attempts"][0]["currency"], currency);
+            let (status, cached) = post_search(router, request).await;
+            assert_eq!(status, 200);
+            assert_eq!(cached["meta"]["cache_hit"], true);
+            assert_eq!(cached["meta"]["cost"], 0.0);
+            assert!(cached["meta"]["currency"].is_null());
+            assert!(cached["attempts"].as_array().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn billable_empty_answers_report_cost_even_when_falling_back_or_failing() {
+        for fallback in [false, true] {
+            let mut ex = deepseek_executor().await;
+            ex.providers
+                .insert("deepseek".into(), Arc::new(ControlledProvider::new(0)));
+            set_price(&ex, "deepseek", 0.75, "USD").await;
+            set_price(&ex, "staan", 2.0, "EUR").await;
+            let router = search_router(ex).await;
+            let (status, body) = post_search(
+                router,
+                serde_json::json!({
+                    "query":"public test", "group":"paid-mapping", "fallback_on_empty":fallback,
+                    "cache_ttl_secs":0
+                }),
+            )
+            .await;
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(body["attempts"][0]["cost"], 0.00075);
+            assert_eq!(body["attempts"][0]["currency"], "USD");
+            assert_eq!(body["meta"]["cost"], if fallback { 0.002 } else { 0.00075 });
+            assert_eq!(
+                body["meta"]["currency"],
+                if fallback { "EUR" } else { "USD" }
+            );
+        }
+        let mut ex = deepseek_executor().await;
+        ex.providers
+            .insert("deepseek".into(), Arc::new(ControlledProvider::new(0)));
+        ex.providers
+            .insert("staan".into(), Arc::new(ControlledProvider::new(402)));
+        set_price(&ex, "deepseek", 0.75, "USD").await;
+        let (status, body) = post_search(
+            search_router(ex).await,
+            serde_json::json!({
+                "query":"public test", "group":"paid-mapping"
+            }),
+        )
+        .await;
+        assert_eq!(status, 503);
+        assert_eq!(body["attempts"][0]["cost"], 0.00075);
+        assert_eq!(body["attempts"][0]["currency"], "USD");
+        assert!(body["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| a["provider"] == "staan")
+            .all(|a| a.get("cost").is_none()));
     }
 
     #[tokio::test]
@@ -1444,7 +1792,7 @@ mod tests {
         use axum::response::IntoResponse;
         for (status, expected, code) in [
             (402, "billing", 503),
-            (400, "request", 422),
+            (400, "request_error", 422),
             (1, "empty", 503),
             (0, "empty", 503),
         ] {
@@ -1462,9 +1810,7 @@ mod tests {
             let error = ex.search(request).await.err().unwrap();
             assert_eq!(error.status.as_u16(), code);
             if status == 400 {
-                assert!(error
-                    .message
-                    .contains("include_domains contains an invalid domain"));
+                assert_eq!(error.message, "No provider accepted the query");
                 assert!(!ex
                     .rate_limit
                     .is_limited(&ex.catalog.read().await.api_keys[0].id));
@@ -1493,7 +1839,11 @@ mod tests {
                 .unwrap();
             assert!(!success);
             assert_eq!(kind, expected);
-            assert!(chain.contains(&format!("staan:{expected}")));
+            if status == 400 {
+                assert!(chain.contains("staan:skipped:invalid_query"));
+            } else {
+                assert!(chain.contains(&format!("staan:{expected}")));
+            }
             assert_eq!(hash, "h");
             assert_eq!(
                 conn.query_row("SELECT COUNT(*) FROM search_log", [], |r| r
@@ -1509,15 +1859,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_parameter_stops_before_other_providers_are_tried() {
-        let mut ex = executor(0).await;
-        let mock = Arc::new(ControlledProvider::new(400));
-        ex.providers.insert("staan".into(), mock.clone());
-        let error = ex.search(params()).await.err().unwrap();
-        assert_eq!(error.status.as_u16(), 422);
-        assert_eq!(error.fallback_chain.as_deref(), Some("staan:request"));
-        assert_eq!(error.attempts.unwrap().as_array().unwrap().len(), 1);
-        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+    async fn upstream_query_refusals_fall_back_without_penalizing_the_key() {
+        for status in [400, 422] {
+            let mut ex = executor(0).await;
+            let mock = Arc::new(ControlledProvider::new(status));
+            ex.providers.insert("staan".into(), mock.clone());
+            let result = ex
+                .search(SearchParams {
+                    max_fallbacks: 0,
+                    ..params()
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.provider_slug, "exa");
+            assert!(result
+                .fallback_chain
+                .contains("staan:skipped:invalid_query"));
+            assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+            assert!(ex.rate_limit.parked_keys().is_empty());
+        }
     }
 
     #[tokio::test]

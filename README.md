@@ -158,7 +158,7 @@ Each result gains `full_content: {text, format, length}` and/or `extra_snippets:
 
 [API documentation](https://api-docs.deepseek.com/guides/search/). Export `DEEPSEEK_API_KEY` (or numbered `DEEPSEEK_KEY_1`…`9`) before starting the server; startup seeds the `deepseek` provider and key references. The server reads exported environment variables; Docker Compose loads `.env`.
 
-Search uses `/v1/tools/search`, caps `n` at 50, maps `language` to `lang:` and freshness to `after:`/`before:`. Domain filters use the router’s existing `site:` operators and result filtering. The final query, including operators, must fit 128 Unicode characters; longer or blank queries return a request error. DeepSeek translates the request’s `country` through the server’s optional `DEEPSEEK_LOCALIZATION_IPS` map (see below).
+Search uses `/v1/tools/search`, caps `n` at 50, maps `language` to `lang:` and freshness to `after:`/`before:`. Domain filters use the router’s existing `site:` operators and result filtering. The final query, including operators, must fit 128 Unicode characters. Longer queries skip DeepSeek (`deepseek:skipped:query_too_long` in the fallback chain) and continue to the next provider without truncating the query. Blank queries are rejected by Sercilo with HTTP 422. DeepSeek translates the request’s `country` through the server’s optional `DEEPSEEK_LOCALIZATION_IPS` map (see below).
 
 `full_content` enables `need_content`; missing bodies remain absent. Fetch uses `/v1/tools/fetch`, one URL per upstream request. Both return Markdown, stamped as `markdown` even if another format was requested. Fetch 403/404 responses are per-page misses eligible for fallback. Search and Fetch each have an upstream limit of 5 QPS; new keys seed a 5 RPS limit and a 3-second search queue before fallback. The adapter spaces calls by at least 210 ms across its keys, with independent Search and Fetch gates. Limits are account-wide, so deployments sharing an account must coordinate their combined traffic. Seeded cost is $0.75 per 1,000 calls; existing request accounting is an estimate; `/contents` does not persist per-call costs.
 
@@ -247,9 +247,13 @@ All admin endpoints require `Authorization: Bearer <ADMIN_TOKEN>`.
 Empty answers remain `empty` attempts in the fallback chain and the next candidate
 is tried. They never cool down a key and reset its transient-failure count.
 A provider 400 identifying an invalid parameter, or a 422 validation response,
-stops the search immediately: the caller receives HTTP 422 with the provider
-message. Other providers are **not tried** for that request, avoiding a fallback
-storm for invalid input. The key remains eligible for other requests.
+skips that provider for the rest of the request and continues the fallback chain
+(`provider:skipped:invalid_query`). Local adapter limitations also skip the provider,
+using a specific reason such as `query_too_long`. These refusals do not consume
+`MAX_FALLBACKS` or cool down the key; another provider may accept the same query.
+If every candidate provider refuses, the caller receives HTTP 422 with a generic
+message and the skip trace. Upstream error bodies are never included in this
+response. Sercilo's own malformed or blank requests remain client errors.
 
 Billing refusals (402, 433, and credit/quota/payment messages in 400/403 bodies)
 park the key with reason `billing`, emit a WARN and a `billing` rate event.
@@ -328,6 +332,25 @@ curl -X PATCH localhost:8090/admin/keys/<id> \
 ```
 
 `cost_per_mille` = cost per 1000 requests, in `currency` (ISO 4217, e.g. `"USD"`, `"EUR"`). Every successful search snapshots `cost = cost_per_mille / 1000` onto its `search_log` row at request time, so later CPM edits never retroactively change historical totals. Cache hits cost nothing (no upstream call made).
+
+`POST /search` returns the same snapshot as `meta.cost` and `meta.currency` for
+the winning call, for every provider with configured key pricing. For a seeded
+DeepSeek key these are `0.00075` and `"USD"`. `attempts[]` also carries `cost` and
+`currency` for accepted calls, including empty answers before fallback. These
+per-attempt estimates remain available in error responses when all candidates
+fail. Use the attempts to account for multiple calls or currencies; do not add
+`meta.cost` a second time. Skips and rejected/failed calls have no cost fields;
+unknown key pricing yields `null` in the metadata. Cache hits return
+`meta.cost: 0.0`, `meta.currency: null`, and no attempts. Empty calls before
+fallback are exposed in `attempts` but are not persisted as separate cost rows
+in the existing aggregate search log. These are configured CPM estimates, not
+upstream invoices; `/contents` and probes retain their existing accounting.
+
+Consumers that estimate costs from their own provider tables must add DeepSeek
+there or consume these response fields. In particular, RTFC's
+`services/analytics/db/queries/cost.py::search_provider_native_cpm` must include
+DeepSeek at $0.75/1,000 calls (or adopt these snapshots); exposing the fields alone
+does not change an older consumer's estimates or backfill historical rows.
 
 Read it back:
 
