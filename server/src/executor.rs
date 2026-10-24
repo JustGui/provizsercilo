@@ -1,4 +1,9 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use providers::{operators, ProviderError, SearchProvider, SearchQuery};
 use proviz_core::{
@@ -50,12 +55,18 @@ impl SearchParams {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct AttemptRecord {
     pub provider: String,
     pub success: bool,
     pub error: Option<String>,
     pub duration_ms: u64,
+    /// Estimated native charge for an accepted upstream call, including empty answers.
+    /// None for skips, rejected/failed requests, or keys without configured pricing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
 }
 
 /// Result of a full search execution including fallback chain.
@@ -300,7 +311,7 @@ impl Executor {
         // tier full of rate-limited free candidates could burn it before the
         // paid fallback tier is ever reached.
         let mut real_attempts: usize = 0;
-        let mut query_refused = false;
+        let mut refused_providers = HashSet::new();
 
         loop {
             if real_attempts > params.max_fallbacks || Instant::now() >= deadline {
@@ -322,6 +333,9 @@ impl Executor {
             // attempts/chain, then advance to the next tier (if any).
             let Some(candidate) = outcome.candidate else {
                 for d in &outcome.decisions {
+                    if refused_providers.contains(&d.provider) {
+                        continue; // Its precise refusal is already in the trace.
+                    }
                     let reason = d.reason.clone().unwrap_or_else(|| d.outcome.clone());
                     chain_parts.push(format!("{}:skipped:{reason}", d.provider));
                     attempt_records.push(AttemptRecord {
@@ -329,6 +343,7 @@ impl Executor {
                         success: false,
                         error: Some(format!("skipped:{reason}")),
                         duration_ms: 0,
+                        ..Default::default()
                     });
                 }
                 tier_idx += 1;
@@ -354,6 +369,7 @@ impl Executor {
                         success: false,
                         error: Some("skipped:budget_exhausted".into()),
                         duration_ms: 0,
+                        ..Default::default()
                     });
                     if params.debug {
                         all_decisions.push(DebugDecision {
@@ -417,11 +433,15 @@ impl Executor {
                         "ok"
                     };
                     chain_parts.push(format!("{provider_slug}:{outcome}"));
+                    let cost = candidate.api_key.cost_per_mille.map(|cpm| cpm / 1000.0);
+                    let currency = cost.and_then(|_| candidate.api_key.currency.clone());
                     attempt_records.push(AttemptRecord {
                         provider: provider_slug.clone(),
                         success: true,
                         error: None,
                         duration_ms: attempt_start.elapsed().as_millis() as u64,
+                        cost,
+                        currency: currency.clone(),
                     });
 
                     let storage = Arc::clone(self.catalog.storage());
@@ -435,9 +455,6 @@ impl Executor {
 
                     // Snapshot the cost at the CPM in effect right now - a later CPM
                     // edit must not retroactively change historical totals.
-                    let cost = candidate.api_key.cost_per_mille.map(|cpm| cpm / 1000.0);
-                    let currency = cost.and_then(|_| candidate.api_key.currency.clone());
-
                     let log = SearchLog {
                         id: Uuid::new_v4().to_string(),
                         query_hash: params.query_hash.clone(),
@@ -475,13 +492,14 @@ impl Executor {
                         // Skip all its keys, without spending the fallback budget or
                         // penalizing the key; another provider may accept the query.
                         real_attempts -= 1;
-                        query_refused = true;
+                        refused_providers.insert(candidate.provider.slug.clone());
                         chain_parts.push(format!("{}:skipped:{reason}", candidate.provider.slug));
                         attempt_records.push(AttemptRecord {
                             provider: candidate.provider.slug.clone(),
                             success: false,
                             error: Some(format!("skipped:{reason}")),
                             duration_ms: attempt_start.elapsed().as_millis() as u64,
+                            ..Default::default()
                         });
                         req.exclude_provider_slugs
                             .push(candidate.provider.slug.clone());
@@ -512,18 +530,29 @@ impl Executor {
                     });
 
                     self.stats.record_search(&candidate.provider.slug, true, 0);
+                    // Empty answers still represent accepted upstream searches.
+                    let cost = (et == ErrorType::Empty)
+                        .then_some(candidate.api_key.cost_per_mille)
+                        .flatten()
+                        .map(|cpm| cpm / 1000.0);
                     attempt_records.push(AttemptRecord {
                         provider: candidate.provider.slug.clone(),
                         success: false,
                         error: Some(error_type.to_string()),
                         duration_ms: attempt_start.elapsed().as_millis() as u64,
+                        cost,
+                        currency: cost.and_then(|_| candidate.api_key.currency.clone()),
                     });
                     excluded.push(candidate.api_key.id.clone());
                 }
             }
         }
 
-        if query_refused && real_attempts == 0 {
+        if tiers
+            .iter()
+            .flatten()
+            .all(|c| refused_providers.contains(&c.provider.slug))
+        {
             return Err(crate::error::AppError::request_error(
                 "No provider accepted the query".into(),
                 chain_parts.join(","),
@@ -1061,6 +1090,125 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status().as_u16(), 422);
         }
+    }
+
+    async fn set_price(ex: &Executor, slug: &str, cpm: f64, currency: &str) {
+        let key = ex
+            .catalog
+            .read()
+            .await
+            .api_keys
+            .iter()
+            .find(|k| k.label == slug)
+            .unwrap()
+            .id
+            .clone();
+        ex.catalog
+            .storage()
+            .update_api_key_fields(
+                &key,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(Some(cpm)),
+                Some(Some(currency.into())),
+                None,
+            )
+            .await
+            .unwrap();
+        ex.catalog.reload().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn configured_native_cost_reaches_search_response_and_cache_hits_are_free() {
+        // All adapters share the same key-priced accounting path.
+        for (slug, cpm, currency) in [
+            ("deepseek", 0.75, "USD"),
+            ("staan", 2.0, "EUR"),
+            ("exa", 7.0, "USD"),
+        ] {
+            let mut ex = executor(0).await;
+            ex.catalog = catalog_with(&[(slug, "COST_TEST_KEY", 1)]).await;
+            ex.providers.insert(
+                slug.into(),
+                Arc::new(FlakyProvider {
+                    slug,
+                    fail_first: 0,
+                    calls: AtomicUsize::new(0),
+                }),
+            );
+            set_price(&ex, slug, cpm, currency).await;
+            let result = ex.search(params()).await.unwrap();
+            assert_eq!(result.log.cost, Some(cpm / 1000.0));
+            assert_eq!(result.log.currency.as_deref(), Some(currency));
+            let router = search_router(ex).await;
+            let request = serde_json::json!({"query":"public pricing test", "cache_ttl_secs":3600});
+            let (status, body) = post_search(router.clone(), request.clone()).await;
+            assert_eq!(status, 200);
+            assert_eq!(body["meta"]["provider"], slug);
+            assert_eq!(body["meta"]["cost"], cpm / 1000.0);
+            assert_eq!(body["meta"]["currency"], currency);
+            assert_eq!(body["attempts"][0]["cost"], cpm / 1000.0);
+            assert_eq!(body["attempts"][0]["currency"], currency);
+            let (status, cached) = post_search(router, request).await;
+            assert_eq!(status, 200);
+            assert_eq!(cached["meta"]["cache_hit"], true);
+            assert_eq!(cached["meta"]["cost"], 0.0);
+            assert!(cached["meta"]["currency"].is_null());
+            assert!(cached["attempts"].as_array().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn billable_empty_answers_report_cost_even_when_falling_back_or_failing() {
+        for fallback in [false, true] {
+            let mut ex = deepseek_executor().await;
+            ex.providers
+                .insert("deepseek".into(), Arc::new(ControlledProvider::new(0)));
+            set_price(&ex, "deepseek", 0.75, "USD").await;
+            set_price(&ex, "staan", 2.0, "EUR").await;
+            let router = search_router(ex).await;
+            let (status, body) = post_search(
+                router,
+                serde_json::json!({
+                    "query":"public test", "group":"paid-mapping", "fallback_on_empty":fallback,
+                    "cache_ttl_secs":0
+                }),
+            )
+            .await;
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(body["attempts"][0]["cost"], 0.00075);
+            assert_eq!(body["attempts"][0]["currency"], "USD");
+            assert_eq!(body["meta"]["cost"], if fallback { 0.002 } else { 0.00075 });
+            assert_eq!(
+                body["meta"]["currency"],
+                if fallback { "EUR" } else { "USD" }
+            );
+        }
+        let mut ex = deepseek_executor().await;
+        ex.providers
+            .insert("deepseek".into(), Arc::new(ControlledProvider::new(0)));
+        ex.providers
+            .insert("staan".into(), Arc::new(ControlledProvider::new(402)));
+        set_price(&ex, "deepseek", 0.75, "USD").await;
+        let (status, body) = post_search(
+            search_router(ex).await,
+            serde_json::json!({
+                "query":"public test", "group":"paid-mapping"
+            }),
+        )
+        .await;
+        assert_eq!(status, 503);
+        assert_eq!(body["attempts"][0]["cost"], 0.00075);
+        assert_eq!(body["attempts"][0]["currency"], "USD");
+        assert!(body["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| a["provider"] == "staan")
+            .all(|a| a.get("cost").is_none()));
     }
 
     #[tokio::test]
