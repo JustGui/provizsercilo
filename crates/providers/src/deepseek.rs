@@ -93,10 +93,8 @@ fn search_request(q: &SearchQuery<'_>) -> Result<SearchRequest, ProviderError> {
             query.push_str(&format!(" before:{to}"));
         }
     }
-    if query.trim().is_empty() || query.chars().count() > 128 {
-        return Err(request_error(
-            "query must contain 1 to 128 Unicode characters including operators",
-        ));
+    if query.chars().count() > 128 {
+        return Err(ProviderError::UnsupportedQuery("query_too_long"));
     }
     Ok(SearchRequest {
         query,
@@ -219,6 +217,10 @@ impl DeepSeekProvider {
 impl SearchProvider for DeepSeekProvider {
     fn slug(&self) -> &str {
         "deepseek"
+    }
+
+    fn validate_search(&self, q: &SearchQuery<'_>) -> Result<(), ProviderError> {
+        search_request(q).map(|_| ())
     }
 
     fn supports_full_content(&self) -> bool {
