@@ -452,6 +452,11 @@ impl Executor {
                     });
 
                     self.stats.record_search(&provider_slug, false, duration_ms);
+                    crate::metrics::record_ok(
+                        &candidate.provider.slug,
+                        crate::metrics::Kind::Search,
+                        output.results.is_empty(),
+                    );
 
                     // Snapshot the cost at the CPM in effect right now - a later CPM
                     // edit must not retroactively change historical totals.
@@ -530,6 +535,11 @@ impl Executor {
                     });
 
                     self.stats.record_search(&candidate.provider.slug, true, 0);
+                    crate::metrics::record_error(
+                        &candidate.provider.slug,
+                        crate::metrics::Kind::Search,
+                        et,
+                    );
                     // Empty answers still represent accepted upstream searches.
                     let cost = (et == ErrorType::Empty)
                         .then_some(candidate.api_key.cost_per_mille)
