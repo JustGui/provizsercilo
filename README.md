@@ -224,6 +224,22 @@ Returns `docs[]` (one per URL, in order) with `content: {text, format, length}`
 and `source` (provider slug or `"cache"`), or an `error` string when no provider
 could fetch it, plus `meta` and `attempts`.
 
+### Metrics
+
+`GET /metrics` (unauthenticated, like `/health`; keep it on the internal network) serves
+Prometheus counters:
+
+- `sercilo_provider_calls_total{provider,kind,outcome}`: `kind` is `search` or `contents`,
+  `outcome` is `ok`, `empty` or `error`.
+- `sercilo_provider_failures_total{provider,kind,reason}`: `reason` uses proviz-elekto's
+  vocabulary (`credits_exhausted` for billing, `quota` for daily caps, `rate_limited`, `auth`,
+  `bad_request`, `timeout`, `server`) so one alert rule covers both gateways. Empty answers
+  are not failures.
+- `sercilo_keys_parked{provider,reason}`: keys currently in cooldown or parked pending a
+  probe.
+
+Labels are catalog slugs only; no query text or provider body is exported.
+
 ### Admin
 
 All admin endpoints require `Authorization: Bearer <ADMIN_TOKEN>`.

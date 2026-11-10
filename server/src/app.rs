@@ -233,6 +233,7 @@ pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
         .route("/report", post(handlers::report::handle_report))
         .route("/health", get(handlers::health::handle_health))
         .route("/stats", get(handlers::stats::handle_stats))
+        .route("/metrics", get(handlers::stats::handle_metrics))
         .nest("/admin", admin_router)
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());

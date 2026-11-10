@@ -5,6 +5,7 @@ mod content_executor;
 mod error;
 mod executor;
 mod handlers;
+mod metrics;
 mod pacing;
 mod probes;
 mod seed;

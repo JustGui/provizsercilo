@@ -285,6 +285,7 @@ impl ContentExecutor {
                     let _ = storage.record_rate_event(&kid2, &ets).await;
                 });
                 self.stats.record_search(&slug, true, dur);
+                crate::metrics::record_error(&slug, crate::metrics::Kind::Contents, etype);
                 attempt_records.push(AttemptRecord {
                     provider: slug.clone(),
                     success: got_any,
@@ -295,6 +296,7 @@ impl ContentExecutor {
             } else {
                 chain_parts.push(format!("{slug}:ok"));
                 self.stats.record_search(&slug, !got_any, dur);
+                crate::metrics::record_ok(&slug, crate::metrics::Kind::Contents, !got_any);
                 attempt_records.push(AttemptRecord {
                     provider: slug.clone(),
                     success: got_any,
