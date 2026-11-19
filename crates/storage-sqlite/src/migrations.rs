@@ -86,6 +86,9 @@ const ALTER_STATEMENTS: &[&str] = &[
     "ALTER TABLE api_keys ADD COLUMN cost_per_mille REAL",
     "ALTER TABLE api_keys ADD COLUMN currency TEXT",
     "ALTER TABLE api_keys ADD COLUMN max_queue_ms BIGINT",
+    "ALTER TABLE api_keys ADD COLUMN tenant TEXT",
+    "ALTER TABLE api_keys ADD COLUMN external_id TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(provider_id, tenant) WHERE is_active AND tenant IS NOT NULL",
     "ALTER TABLE search_log ADD COLUMN cost REAL",
     "ALTER TABLE search_log ADD COLUMN currency TEXT",
 ];

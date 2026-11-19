@@ -39,6 +39,8 @@ const SCHEMA_STATEMENTS: &[&str] = &[
     "ALTER TABLE ps_api_keys ADD COLUMN IF NOT EXISTS cost_per_mille DOUBLE PRECISION",
     "ALTER TABLE ps_api_keys ADD COLUMN IF NOT EXISTS currency TEXT",
     "ALTER TABLE ps_api_keys ADD COLUMN IF NOT EXISTS max_queue_ms BIGINT",
+    "ALTER TABLE ps_api_keys ADD COLUMN IF NOT EXISTS tenant TEXT",
+    "ALTER TABLE ps_api_keys ADD COLUMN IF NOT EXISTS external_id TEXT",
     "CREATE TABLE IF NOT EXISTS ps_groups (\
         id TEXT PRIMARY KEY, \
         slug TEXT UNIQUE NOT NULL, \
@@ -83,6 +85,7 @@ const SCHEMA_STATEMENTS: &[&str] = &[
     "ALTER TABLE ps_search_log ADD COLUMN IF NOT EXISTS cost DOUBLE PRECISION",
     "ALTER TABLE ps_search_log ADD COLUMN IF NOT EXISTS currency TEXT",
     "CREATE INDEX IF NOT EXISTS ps_idx_api_keys_provider ON ps_api_keys(provider_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ps_idx_api_keys_tenant ON ps_api_keys(provider_id, tenant) WHERE is_active AND tenant IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS ps_idx_group_members_group ON ps_group_members(group_id)",
     "CREATE INDEX IF NOT EXISTS ps_idx_group_members_key ON ps_group_members(api_key_id)",
     "CREATE INDEX IF NOT EXISTS ps_idx_rate_events_key ON ps_rate_events(api_key_id)",
@@ -134,6 +137,8 @@ fn read_api_key(row: &PgRow) -> Result<ApiKey, StorageError> {
         created_at: row.try_get("created_at").map_err(row_err)?,
         cost_per_mille: row.try_get("cost_per_mille").map_err(row_err)?,
         currency: row.try_get("currency").map_err(row_err)?,
+        tenant: row.try_get("tenant").map_err(row_err)?,
+        external_id: row.try_get("external_id").map_err(row_err)?,
     })
 }
 
@@ -277,7 +282,7 @@ impl StorageBackend for PgStorage {
     async fn list_api_keys(&self) -> Result<Vec<ApiKey>, StorageError> {
         let rows = sqlx::query(
             "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                    rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms FROM ps_api_keys",
+                    rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms, tenant, external_id FROM ps_api_keys",
         )
         .fetch_all(&self.pool)
         .await
@@ -288,7 +293,7 @@ impl StorageBackend for PgStorage {
     async fn list_keys_for_provider(&self, provider_id: &str) -> Result<Vec<ApiKey>, StorageError> {
         let rows = sqlx::query(
             "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                    rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms
+                    rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms, tenant, external_id
              FROM ps_api_keys WHERE provider_id = $1",
         )
         .bind(provider_id)
@@ -301,7 +306,7 @@ impl StorageBackend for PgStorage {
     async fn get_api_key(&self, id: &str) -> Result<ApiKey, StorageError> {
         let row = sqlx::query(
             "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                    rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms
+                    rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms, tenant, external_id
              FROM ps_api_keys WHERE id = $1",
         )
         .bind(id)
@@ -315,8 +320,8 @@ impl StorageBackend for PgStorage {
     async fn create_api_key(&self, key: ApiKey) -> Result<ApiKey, StorageError> {
         sqlx::query(
             "INSERT INTO ps_api_keys (id, provider_id, label, key_ref, is_active, rps_limit,
-             rpm_limit, rpd_limit, cost_per_mille, currency, max_queue_ms)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+             rpm_limit, rpd_limit, cost_per_mille, currency, max_queue_ms, tenant, external_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
         )
         .bind(&key.id)
         .bind(&key.provider_id)
@@ -329,6 +334,8 @@ impl StorageBackend for PgStorage {
         .bind(key.cost_per_mille)
         .bind(&key.currency)
         .bind(key.max_queue_ms)
+        .bind(&key.tenant)
+        .bind(&key.external_id)
         .execute(&self.pool)
         .await
         .map_err(pg_err)?;

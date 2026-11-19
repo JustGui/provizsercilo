@@ -47,6 +47,8 @@ pub struct SearchParams {
     pub exclude_domains: Vec<String>,
     /// Publication window, mapped by each adapter that has a date parameter.
     pub freshness: operators::Freshness,
+    /// Caller tenants, most specific first; see `Catalog::candidates_for`.
+    pub tenants: Vec<String>,
 }
 
 impl SearchParams {
@@ -129,7 +131,7 @@ impl Executor {
     ) -> Result<(), ProviderError> {
         let catalog = self.catalog.read().await;
         let candidate = catalog
-            .candidates(None)
+            .all_key_candidates()
             .into_iter()
             .find(|c| c.api_key.id == key_id)
             .ok_or(ProviderError::Blocked)?;
@@ -247,7 +249,7 @@ impl Executor {
         let start = Instant::now();
         let deadline = start + Duration::from_millis(params.timeout_ms);
         let catalog = self.catalog.read().await;
-        let mut pool = catalog.candidates(params.group_slug.as_deref());
+        let mut pool = catalog.candidates_for(params.group_slug.as_deref(), &params.tenants);
         drop(catalog);
 
         // Enrichment requested → only keep candidates whose adapter can actually
@@ -616,11 +618,13 @@ impl Executor {
 
         let api_key =
             resolve_key(&candidate.api_key.key_ref, &self.secrets_dir).map_err(|e| match e {
-                ResolveError::NotFound(_) | ResolveError::FileRead { .. } => ProviderError::Http {
+                ResolveError::NotFound(_)
+                | ResolveError::FileRead { .. }
+                | ResolveError::Decrypt => ProviderError::Http {
                     status: 401,
                     message: format!(
                         "key_ref '{}' could not be resolved",
-                        candidate.api_key.key_ref
+                        proviz_core::key_resolver::display_ref(&candidate.api_key.key_ref)
                     ),
                 },
             })?;
@@ -863,6 +867,8 @@ mod tests {
                 created_at: String::new(),
                 cost_per_mille: None,
                 currency: None,
+                tenant: None,
+                external_id: None,
             })
             .await
             .unwrap();
@@ -894,6 +900,7 @@ mod tests {
             include_domains: vec![],
             exclude_domains: vec![],
             freshness: Default::default(),
+            tenants: vec![],
         }
     }
 

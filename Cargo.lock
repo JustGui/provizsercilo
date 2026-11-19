@@ -1348,8 +1348,10 @@ name = "proviz-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "dashmap",
+ "ring",
  "serde",
  "serde_json",
  "tempdir",
@@ -1807,6 +1809,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
  "cache",
  "chrono",
  "hex",
