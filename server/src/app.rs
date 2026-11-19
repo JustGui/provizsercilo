@@ -268,6 +268,15 @@ fn build_admin_router(app_state: AppState) -> Router<AppState> {
             "/keys/:id/resolve",
             get(handlers::admin::handle_resolve_key),
         )
+        .route(
+            "/tenant-keys/:slug",
+            get(handlers::tenant_keys::handle_list_tenant_keys),
+        )
+        .route(
+            "/tenant-keys/:slug/:tenant",
+            put(handlers::tenant_keys::handle_ensure_tenant_key)
+                .delete(handlers::tenant_keys::handle_delete_tenant_key),
+        )
         .route("/costs", get(handlers::admin::handle_cost_stats))
         .route("/groups", get(handlers::admin::handle_list_groups))
         .route("/groups", post(handlers::admin::handle_create_group))

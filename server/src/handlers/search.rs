@@ -67,6 +67,24 @@ pub struct SearchRequest {
     /// the smallest window covering it (none for a historical range).
     pub date_from: Option<String>,
     pub date_to: Option<String>,
+    /// Who the search is for, most specific first (`team:<id>`, `client:<id>`).
+    /// A provider key owned by the first listed tenant that has one replaces that
+    /// provider's shared keys (`Catalog::candidates_for`); no match = shared pool.
+    /// Results are tenant-independent, so the query cache stays shared.
+    #[serde(default)]
+    pub tenants: Vec<String>,
+}
+
+/// `team:<id>` / `client:<id>`, at most four, ids of `[A-Za-z0-9-]{1,64}`.
+pub fn valid_tenants(tenants: &[String]) -> bool {
+    tenants.len() <= 4
+        && tenants.iter().all(|t| {
+            t.split_once(':').is_some_and(|(kind, id)| {
+                matches!(kind, "team" | "client")
+                    && (1..=64).contains(&id.len())
+                    && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            })
+        })
 }
 
 fn default_n() -> usize {
@@ -141,6 +159,13 @@ pub async fn handle_search(
     if req.query.trim().is_empty() {
         return Err(AppError::request_error(
             "query must not be blank".into(),
+            String::new(),
+            &Vec::<AttemptRecord>::new(),
+        ));
+    }
+    if !valid_tenants(&req.tenants) {
+        return Err(AppError::request_error(
+            "tenants must be at most 4 of team:<id> / client:<id>".into(),
             String::new(),
             &Vec::<AttemptRecord>::new(),
         ));
@@ -234,6 +259,7 @@ pub async fn handle_search(
             include_domains: req.include_domains.clone(),
             exclude_domains: req.exclude_domains.clone(),
             freshness,
+            tenants: req.tenants.clone(),
         })
         .await?;
 

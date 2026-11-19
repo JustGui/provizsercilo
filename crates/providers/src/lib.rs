@@ -9,6 +9,7 @@ pub mod parallel;
 pub mod searxng;
 pub mod serper;
 pub mod staan;
+pub mod staan_keys;
 pub mod tavily;
 pub mod you_com;
 

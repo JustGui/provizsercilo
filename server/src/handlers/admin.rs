@@ -146,6 +146,7 @@ pub struct ApiKeyPublic {
     pub created_at: String,
     pub cost_per_mille: Option<f64>,
     pub currency: Option<String>,
+    pub tenant: Option<String>,
 }
 
 impl From<ApiKey> for ApiKeyPublic {
@@ -154,7 +155,7 @@ impl From<ApiKey> for ApiKeyPublic {
             id: k.id,
             provider_id: k.provider_id,
             label: k.label,
-            key_ref: k.key_ref,
+            key_ref: proviz_core::key_resolver::display_ref(&k.key_ref).to_string(),
             is_active: k.is_active,
             max_queue_ms: k.max_queue_ms,
             rps_limit: k.rps_limit,
@@ -164,6 +165,7 @@ impl From<ApiKey> for ApiKeyPublic {
             created_at: k.created_at,
             cost_per_mille: k.cost_per_mille,
             currency: k.currency,
+            tenant: k.tenant,
         }
     }
 }
@@ -211,6 +213,8 @@ pub async fn handle_create_key(
         created_at: String::new(),
         cost_per_mille: req.cost_per_mille,
         currency: req.currency,
+        tenant: None,
+        external_id: None,
     };
     let created = state.storage.create_api_key(key).await?;
     state.catalog.reload().await?;

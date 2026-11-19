@@ -44,7 +44,7 @@ impl ProbeRunner {
             .catalog
             .read()
             .await
-            .candidates(None)
+            .all_key_candidates()
             .iter()
             .any(|c| c.api_key.id == id);
         if !active {

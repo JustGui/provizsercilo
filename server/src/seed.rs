@@ -273,6 +273,8 @@ pub async fn seed_from_env(storage: &dyn proviz_core::storage::StorageBackend) {
                 created_at: String::new(),
                 cost_per_mille: (*slug == "deepseek").then_some(0.75),
                 currency: (*slug == "deepseek").then(|| "USD".into()),
+                tenant: None,
+                external_id: None,
             };
             match storage.create_api_key(key).await {
                 Ok(_) => info!(slug, key_ref, "auto-registered key"),

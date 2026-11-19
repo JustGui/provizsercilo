@@ -41,6 +41,8 @@ fn make_key(provider_id: &str, label: &str) -> ApiKey {
         created_at: String::new(),
         cost_per_mille: None,
         currency: None,
+        tenant: None,
+        external_id: None,
     }
 }
 

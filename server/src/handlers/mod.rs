@@ -4,3 +4,4 @@ pub mod health;
 pub mod report;
 pub mod search;
 pub mod stats;
+pub mod tenant_keys;

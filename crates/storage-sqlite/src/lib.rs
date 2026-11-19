@@ -109,6 +109,8 @@ fn read_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
         created_at: row.get(9)?,
         cost_per_mille: row.get(10)?,
         currency: row.get(11)?,
+        tenant: row.get(13)?,
+        external_id: row.get(14)?,
     })
 }
 
@@ -339,7 +341,7 @@ impl StorageBackend for Storage {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                        rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms FROM api_keys",
+                        rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms, tenant, external_id FROM api_keys",
             )?;
             let mapped = stmt.query_map([], read_key)?;
             Ok(mapped.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -352,7 +354,7 @@ impl StorageBackend for Storage {
         self.with_conn(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                        rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms
+                        rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms, tenant, external_id
                  FROM api_keys WHERE provider_id = ?1",
             )?;
             let mapped = stmt.query_map(params![pid], read_key)?;
@@ -366,7 +368,7 @@ impl StorageBackend for Storage {
         self.with_conn(move |conn| {
             conn.query_row(
                 "SELECT id, provider_id, label, key_ref, is_active, rps_limit, rpm_limit,
-                        rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms
+                        rpd_limit, last_used_at, created_at, cost_per_mille, currency, max_queue_ms, tenant, external_id
                  FROM api_keys WHERE id = ?1",
                 params![id.clone()],
                 read_key,
@@ -380,8 +382,8 @@ impl StorageBackend for Storage {
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO api_keys (id, provider_id, label, key_ref, is_active, rps_limit,
-                 rpm_limit, rpd_limit, cost_per_mille, currency, max_queue_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 rpm_limit, rpd_limit, cost_per_mille, currency, max_queue_ms, tenant, external_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     key.id,
                     key.provider_id,
@@ -393,7 +395,9 @@ impl StorageBackend for Storage {
                     key.rpd_limit,
                     key.cost_per_mille,
                     key.currency,
-                    key.max_queue_ms
+                    key.max_queue_ms,
+                    key.tenant,
+                    key.external_id
                 ],
             )?;
             Ok(key)

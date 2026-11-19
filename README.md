@@ -384,6 +384,38 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 
 Rows are grouped by `(provider, currency)` — spend in different currencies is never summed together.
 
+## Tenant keys (one Staan key per customer team)
+
+Staan rate-limits each API key (20 req/s), not the account. A caller can name who a
+search is for, most specific first, and get that tenant's own key and budget:
+
+```
+POST /search { "query": "...", "tenants": ["team:<id>", "client:<id>"] }
+```
+
+For every provider in the group that has an active key for one of those tenants, the
+first matching tenant's key replaces that provider's shared keys at the same tier
+(`Catalog::candidates_for`). The tenant never borrows the shared key: when its key's
+pacing queue is full the cascade moves on (e.g. to Brave). Tenant keys are never part
+of the shared pool or `/contents`; a parked tenant key is probed back like any other.
+The query cache stays shared.
+
+Keys are created and deleted through Staan's key API (docs.staan.ai/docs/api-keys):
+
+```
+GET    /admin/tenant-keys/staan                 active tenant keys (no values)
+PUT    /admin/tenant-keys/staan/<tenant> {name} idempotent: existing key, or a new one
+DELETE /admin/tenant-keys/staan/<tenant>        delete at Staan, then deactivate + wipe
+```
+
+Rate limits, pacing and pricing are copied from the shared Staan key. Staan shows a new
+key's value once, so it is stored sealed in `key_ref` (`enc:v1:`, AES-256-GCM).
+Required env (or `$SECRETS_DIR` files): `STAAN_CONSOLE_KEY` (a console key; only those
+may call `/v1/keys`) and `SERCILO_KEY_ENCRYPTION_KEY` (base64 of 32 random bytes:
+`openssl rand -base64 32`). Losing or changing the master key makes every tenant key
+unreadable: delete and re-create them. Staan allows 100 keys per account; past that,
+`PUT` answers 409 `tenant_key_limit` and the tenant keeps the shared key.
+
 ## Workspace layout
 
 ```

@@ -36,6 +36,14 @@ pub struct ApiKey {
     pub cost_per_mille: Option<f64>,
     /// ISO 4217 currency code (e.g. "USD", "EUR") for `cost_per_mille`.
     pub currency: Option<String>,
+    /// Caller tenant this key belongs to (e.g. `team:<uuid>`). A tenant key is used
+    /// only by requests naming that tenant, never by the shared pool.
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// The vendor's own id for a key sercilo created through the vendor API
+    /// (needed to delete it there).
+    #[serde(default)]
+    pub external_id: Option<String>,
 }
 
 impl ApiKey {
