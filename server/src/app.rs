@@ -129,12 +129,25 @@ pub fn build_content_providers() -> HashMap<String, Arc<dyn ContentProvider>> {
     map
 }
 
+/// The database URL without its password, safe to log.
+fn redact_db_url(raw: &str) -> String {
+    match url::Url::parse(raw) {
+        Ok(mut u) => {
+            if u.password().is_some() {
+                let _ = u.set_password(Some("***"));
+            }
+            u.to_string()
+        }
+        Err(_) => "<unparseable database URL>".to_string(),
+    }
+}
+
 pub async fn build_app(config: Config) -> anyhow::Result<(Router, AppState)> {
     let deepseek_localizations =
         providers::deepseek::parse_country_localizations(&config.deepseek_localization_ips)
             .map_err(anyhow::Error::msg)?;
     let storage: Arc<dyn StorageBackend> = if let Some(ref url) = config.database_url {
-        tracing::info!(url = %url, "connecting to PostgreSQL");
+        tracing::info!(url = %redact_db_url(url), "connecting to PostgreSQL");
         Arc::new(storage_postgres::PgStorage::connect(url).await?)
     } else {
         tracing::info!(path = %config.database_path.display(), "opening SQLite database");
@@ -311,6 +324,15 @@ mod admin_probe_tests {
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
+
+    #[test]
+    fn database_url_is_logged_without_its_password() {
+        let shown = redact_db_url("postgres://proviz:s3cret@db.internal:5432/proviz");
+        assert_eq!(shown, "postgres://proviz:***@db.internal:5432/proviz");
+        assert!(!redact_db_url("postgres://u:p%40ss@h/d").contains("p%40ss"));
+        assert_eq!(redact_db_url("postgres://h/d"), "postgres://h/d");
+        assert!(!redact_db_url("not a url s3cret").contains("s3cret"));
+    }
 
     #[tokio::test]
     async fn malformed_localization_config_fails_before_opening_storage() {
